@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "237246156685",
+    "project_id": "veerxcape-01",
+    "storage_bucket": "veerxcape-01.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:237246156685:android:f3cb6d458bb1372e38f7c4",
+        "android_client_info": {
+          "package_name": "com.zealion.veerxcape"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "237246156685-2ahkkqvmih3tc491denn4qqtli61mgev.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCZHGe39fWWMJnBMM7ZLvGly4iCmtaIlqI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "237246156685-2ahkkqvmih3tc491denn4qqtli61mgev.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

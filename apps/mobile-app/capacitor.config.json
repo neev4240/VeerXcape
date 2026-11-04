@@ -1,0 +1,9 @@
+{
+  "appId": "com.zealion.veerxcape",
+  "appName": "VeerXcape",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https"
+  }
+}
