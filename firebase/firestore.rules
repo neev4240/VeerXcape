@@ -1,0 +1,339 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================================
+    // 1. CORE IDENTITY & LIVE REVOCATION HELPERS
+    // =========================================================================
+    function isSignedIn() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function userDocPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
+    // Verifies the user record exists, is ACTIVE, and matches the token's sessionVersion (sv)
+    // so that account suspension or token revocation takes effect immediately (0s delay).
+    function isActiveUser() {
+      return isSignedIn()
+        && exists(userDocPath(request.auth.uid))
+        && get(userDocPath(request.auth.uid)).data.status == 'ACTIVE'
+        && (
+          !('sv' in request.auth.token)
+          || get(userDocPath(request.auth.uid)).data.sessionVersion == request.auth.token.sv
+        );
+    }
+
+    function roleDocId(uid, role, scopeId) {
+      return uid + '_' + role + '_' + scopeId;
+    }
+
+    function roleDocPath(uid, role, scopeId) {
+      return /databases/$(database)/documents/userRoles/$(roleDocId(uid, role, scopeId));
+    }
+
+    function hasActivePlatformRole(role) {
+      return isActiveUser()
+        && exists(roleDocPath(request.auth.uid, role, 'PLATFORM'))
+        && get(roleDocPath(request.auth.uid, role, 'PLATFORM')).data.status == 'ACTIVE';
+    }
+
+    function isVeerXcapeStaff() {
+      return hasActivePlatformRole('VEERXCAPE_SUPPORT')
+        || hasActivePlatformRole('VEERXCAPE_ADMIN')
+        || hasActivePlatformRole('VEERXCAPE_SUPER_ADMIN');
+    }
+
+    function isVeerXcapeAdminOrSuper() {
+      return hasActivePlatformRole('VEERXCAPE_ADMIN')
+        || hasActivePlatformRole('VEERXCAPE_SUPER_ADMIN');
+    }
+
+    function isSuperAdmin() {
+      return hasActivePlatformRole('VEERXCAPE_SUPER_ADMIN');
+    }
+
+    // Multi-tenant Company check (verifies both active role AND active company status)
+    function hasActiveCompanyRole(companyId, role) {
+      return isActiveUser()
+        && companyId != null
+        && exists(/databases/$(database)/documents/companies/$(companyId))
+        && get(/databases/$(database)/documents/companies/$(companyId)).data.status == 'ACTIVE'
+        && exists(roleDocPath(request.auth.uid, role, companyId))
+        && get(roleDocPath(request.auth.uid, role, companyId)).data.status == 'ACTIVE';
+    }
+
+    // Multi-tenant Showroom check (verifies active role, active showroom, and active parent company)
+    function hasActiveShowroomRole(showroomId, role) {
+      return isActiveUser()
+        && showroomId != null
+        && exists(/databases/$(database)/documents/showrooms/$(showroomId))
+        && get(/databases/$(database)/documents/showrooms/$(showroomId)).data.status == 'ACTIVE'
+        && exists(roleDocPath(request.auth.uid, role, showroomId))
+        && get(roleDocPath(request.auth.uid, role, showroomId)).data.status == 'ACTIVE';
+    }
+
+    function isActiveShowroomStaffOrManager(showroomId) {
+      return hasActiveShowroomRole(showroomId, 'SHOWROOM_STAFF')
+        || hasActiveShowroomRole(showroomId, 'SHOWROOM_MANAGER');
+    }
+
+    // Vehicle ownership, active family membership, and active driver helpers
+    function isActiveVehicleOwner(vehicleId) {
+      let ownershipPath = /databases/$(database)/documents/vehicleOwners/$(vehicleId + '_' + request.auth.uid);
+      return isActiveUser()
+        && exists(ownershipPath)
+        && get(ownershipPath).data.status == 'ACTIVE';
+    }
+
+    function getActiveFamilyMembership(vehicleId) {
+      return get(/databases/$(database)/documents/familyMemberships/$(vehicleId + '_' + request.auth.uid));
+    }
+
+    function isActiveFamilyMemberForVehicle(vehicleId) {
+      let membershipPath = /databases/$(database)/documents/familyMemberships/$(vehicleId + '_' + request.auth.uid);
+      return isActiveUser()
+        && exists(membershipPath)
+        && get(membershipPath).data.status == 'ACTIVE';
+    }
+
+    function isActiveDriverForVehicle(vehicleId) {
+      let driverPath = /databases/$(database)/documents/vehicleDrivers/$(vehicleId + '_' + request.auth.uid);
+      return isActiveUser()
+        && exists(driverPath)
+        && get(driverPath).data.status == 'ACTIVE';
+    }
+
+    function canReadVehicle(vehicleId, companyId, showroomId) {
+      return isActiveVehicleOwner(vehicleId)
+        || isActiveFamilyMemberForVehicle(vehicleId)
+        || isActiveDriverForVehicle(vehicleId)
+        || isActiveShowroomStaffOrManager(showroomId)
+        || hasActiveCompanyRole(companyId, 'COMPANY_ADMIN')
+        || isVeerXcapeStaff();
+    }
+
+    // =========================================================================
+    // 2. SERVER-ONLY SECURITY & LOCK COLLECTIONS (100% Client Locked)
+    // =========================================================================
+    match /_uniqueLocks/{lockKey} {
+      allow read, write: if false;
+    }
+
+    match /_authSecrets/{uid} {
+      allow read, write: if false;
+    }
+
+    match /_otpChallenges/{challengeId} {
+      allow read, write: if false;
+    }
+
+    match /_deviceKeyVault/{deviceId} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // 3. IDENTITY & ROLE COLLECTIONS (1..3)
+    // =========================================================================
+    match /users/{uid} {
+      allow read: if (isSignedIn() && request.auth.uid == uid) || isVeerXcapeStaff();
+      allow write: if false; // Mutated only via trusted Cloud Functions
+    }
+
+    match /userProfiles/{uid} {
+      allow read: if (isActiveUser() && request.auth.uid == uid) || isVeerXcapeStaff();
+      allow write: if false; // Mutated only via trusted Cloud Functions
+    }
+
+    match /userRoles/{roleId} {
+      allow read: if (isActiveUser() && resource.data.userId == request.auth.uid) || isVeerXcapeStaff();
+      allow write: if false; // Assigned/revoked exclusively via RBAC Cloud Functions
+    }
+
+    // =========================================================================
+    // 4. MULTI-TENANT ORGANISATION, COMPANY, SHOWROOM & AUTHORITY (4..7)
+    // =========================================================================
+    match /organisations/{orgId} {
+      allow read: if isVeerXcapeStaff();
+      allow write: if false;
+    }
+
+    match /companies/{companyId} {
+      allow read: if hasActiveCompanyRole(companyId, 'COMPANY_ADMIN') || isVeerXcapeStaff();
+      allow write: if false;
+    }
+
+    match /showrooms/{showroomId} {
+      allow read: if isActiveShowroomStaffOrManager(showroomId)
+        || hasActiveCompanyRole(resource.data.companyId, 'COMPANY_ADMIN')
+        || isVeerXcapeStaff();
+      allow write: if false;
+    }
+
+    match /authorities/{authorityId} {
+      allow read: if isActiveUser() && (
+        (exists(roleDocPath(request.auth.uid, 'AUTHORITY_MEDICAL', authorityId)) && get(roleDocPath(request.auth.uid, 'AUTHORITY_MEDICAL', authorityId)).data.status == 'ACTIVE')
+        || (exists(roleDocPath(request.auth.uid, 'AUTHORITY_POLICE', authorityId)) && get(roleDocPath(request.auth.uid, 'AUTHORITY_POLICE', authorityId)).data.status == 'ACTIVE')
+        || (exists(roleDocPath(request.auth.uid, 'AUTHORITY_ROAD', authorityId)) && get(roleDocPath(request.auth.uid, 'AUTHORITY_ROAD', authorityId)).data.status == 'ACTIVE')
+        || isVeerXcapeStaff()
+      );
+      allow write: if false;
+    }
+
+    // =========================================================================
+    // 5. VEHICLE, OWNERSHIP, DRIVER, FAMILY & EMERGENCY CONTACTS (8..12)
+    // =========================================================================
+    match /vehicles/{vehicleId} {
+      allow read: if canReadVehicle(vehicleId, resource.data.companyId, resource.data.registeredByShowroomId);
+      allow write: if false;
+    }
+
+    match /vehicleOwners/{ownershipId} {
+      allow read: if (isActiveUser() && resource.data.userId == request.auth.uid) || isVeerXcapeStaff();
+      allow write: if false;
+    }
+
+    match /vehicleDrivers/{driverAssignmentId} {
+      allow read: if isActiveUser() && (
+        resource.data.driverUserId == request.auth.uid
+        || resource.data.assignedByOwnerId == request.auth.uid
+        || isVeerXcapeStaff()
+      );
+      allow write: if false;
+    }
+
+    match /familyMemberships/{membershipId} {
+      allow read: if isActiveUser() && (
+        resource.data.ownerUserId == request.auth.uid
+        || (resource.data.familyUserId == request.auth.uid && resource.data.status == 'ACTIVE')
+        || isVeerXcapeStaff()
+      );
+      allow write: if false;
+    }
+
+    match /emergencyContacts/{contactId} {
+      allow read: if isActiveUser() && (
+        resource.data.ownerUserId == request.auth.uid
+        || isActiveVehicleOwner(resource.data.vehicleId)
+        || isVeerXcapeStaff()
+      );
+      allow write: if false;
+    }
+
+    // =========================================================================
+    // 6. HARDWARE DEVICES, ASSIGNMENTS, HEARTBEATS & TELEMETRY (13..16)
+    // =========================================================================
+    match /devices/{deviceId} {
+      allow read: if isActiveUser() && (
+        (resource.data.assignedVehicleId != null && isActiveVehicleOwner(resource.data.assignedVehicleId))
+        || isActiveShowroomStaffOrManager(resource.data.allocatedShowroomId)
+        || hasActiveCompanyRole(resource.data.allocatedCompanyId, 'COMPANY_ADMIN')
+        || isVeerXcapeStaff()
+      );
+      allow write: if false;
+    }
+
+    match /deviceAssignments/{assignmentId} {
+      allow read: if isActiveUser() && (
+        isActiveVehicleOwner(resource.data.vehicleId)
+        || isActiveShowroomStaffOrManager(resource.data.showroomId)
+        || hasActiveCompanyRole(resource.data.companyId, 'COMPANY_ADMIN')
+        || isVeerXcapeStaff()
+      );
+      allow write: if false;
+    }
+
+    match /deviceHeartbeats/{heartbeatId} {
+      allow read: if isActiveUser() && (
+        isActiveVehicleOwner(resource.data.vehicleId)
+        || isVeerXcapeStaff()
+      );
+      allow write: if false;
+    }
+
+    match /telemetry/{telemetryId} {
+      allow read: if isActiveUser() && (
+        isActiveVehicleOwner(resource.data.vehicleId)
+        || (
+          isActiveFamilyMemberForVehicle(resource.data.vehicleId)
+          && getActiveFamilyMembership(resource.data.vehicleId).data.permissions.canViewTelemetry == true
+        )
+        || isVeerXcapeStaff()
+      );
+      allow write: if false;
+    }
+
+    // =========================================================================
+    // 7. INCIDENTS, UPDATES, ALERTS & NOTIFICATIONS (17..20)
+    // Note: Government Authority access goes through the audited Cloud Function
+    // API (/api/v1/authority/incidents) so every access is logged in auditLogs
+    // and AUTHORITY_ROAD payloads are strictly anonymized.
+    // =========================================================================
+    match /incidents/{incidentId} {
+      allow read: if isActiveUser() && (
+        isActiveVehicleOwner(resource.data.vehicleId)
+        || (
+          isActiveFamilyMemberForVehicle(resource.data.vehicleId)
+          && request.auth.uid in resource.data.sharedWithFamilyIds
+          && getActiveFamilyMembership(resource.data.vehicleId).data.permissions.canViewIncidentHistory == true
+        )
+        || isActiveDriverForVehicle(resource.data.vehicleId)
+        || isVeerXcapeStaff()
+      );
+      allow write: if false;
+    }
+
+    match /incidentUpdates/{updateId} {
+      allow read: if isActiveUser() && (
+        (
+          resource.data.visibility in ['ALL_AUTHORIZED', 'CUSTOMER_VISIBLE']
+          && isActiveVehicleOwner(resource.data.vehicleId)
+        )
+        || isVeerXcapeStaff()
+      );
+      allow write: if false;
+    }
+
+    match /alerts/{alertId} {
+      allow read: if isActiveUser() && (
+        request.auth.uid in resource.data.targetUserIds
+        || isVeerXcapeStaff()
+      );
+      allow write: if false;
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isActiveUser() && (
+        resource.data.recipientUserId == request.auth.uid
+        || isVeerXcapeStaff()
+      );
+      allow write: if false;
+    }
+
+    // =========================================================================
+    // 8. IMMUTABLE AUDIT LOGS, SUPPORT TICKETS & SYSTEM CONFIG (21..23)
+    // =========================================================================
+    match /auditLogs/{auditId} {
+      // Strictly read-only for VEERXCAPE_ADMIN and VEERXCAPE_SUPER_ADMIN.
+      // Clients can NEVER create, update, or delete audit entries.
+      allow read: if isVeerXcapeAdminOrSuper();
+      allow create, update, delete: if false;
+    }
+
+    match /supportTickets/{ticketId} {
+      allow read: if isActiveUser() && (
+        resource.data.createdByUserId == request.auth.uid
+        || isVeerXcapeStaff()
+      );
+      allow write: if false;
+    }
+
+    match /systemConfiguration/{configKey} {
+      allow read: if isVeerXcapeStaff();
+      allow write: if false;
+    }
+  }
+}
+

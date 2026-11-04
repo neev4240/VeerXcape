@@ -1,0 +1,27 @@
+{
+  "name": "veerxcape-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "VeerXcape Connected Vehicle Safety & Emergency-Response Platform Monorepo",
+  "workspaces": [
+    "packages/*",
+    "functions",
+    "apps/*"
+  ],
+  "scripts": {
+    "build:packages": "npm run build --workspace=@veerxcape/shared-constants && npm run build --workspace=@veerxcape/shared-types && npm run build --workspace=@veerxcape/shared-validation && npm run build --workspace=@veerxcape/shared-services",
+    "build": "npm run build:packages && npm run build --workspaces --if-present",
+    "typecheck": "npm run build:packages && npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "clean": "rm -rf packages/*/dist functions/lib apps/*/dist"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.12",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5",
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

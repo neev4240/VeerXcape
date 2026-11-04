@@ -1,0 +1,32 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function isValidDocumentUpload() {
+      return request.resource.size <= 10 * 1024 * 1024 // Max 10 MB
+        && request.resource.contentType.matches('application/pdf|image/jpeg|image/png|image/webp');
+    }
+
+    // Vehicle registration supporting documents uploaded via Showroom workflow
+    match /vehicles/{vehicleId}/registration/{fileName} {
+      allow read: if isSignedIn() && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.status == 'ACTIVE';
+      allow write: if false; // Signed upload URLs issued only by verified Cloud Functions
+    }
+
+    // Incident evidence attachments
+    match /incidents/{incidentId}/attachments/{fileName} {
+      allow read: if isSignedIn() && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.status == 'ACTIVE';
+      allow write: if false; // Uploaded exclusively through server-validated endpoints
+    }
+
+    // Default deny all other paths
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
+

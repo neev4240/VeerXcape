@@ -1,0 +1,23 @@
+{
+  "name": "@veerxcape/shared-services",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@veerxcape/shared-constants": "1.0.0",
+    "@veerxcape/shared-types": "1.0.0",
+    "@veerxcape/shared-validation": "1.0.0"
+  }
+}

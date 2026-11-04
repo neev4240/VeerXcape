@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+lib/
+build/
+*.tsbuildinfo
+
+# Environment & Secrets (NEVER commit real secrets or service account keys)
+.env
+.env.local
+.env.development
+.env.staging
+.env.production
+.env.*.local
+!.env.example
+*service-account*.json
+*firebase-adminsdk*.json
+*.pem
+*.key
+.firebaserc
+!.firebaserc.example
+
+# Firebase & Vercel local state
+.firebase/
+.vercel/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+pubsub-debug.log
+
+# IDE & OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+coverage/
+

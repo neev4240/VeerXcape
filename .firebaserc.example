@@ -1,0 +1,9 @@
+{
+  "projects": {
+    "default": "veerxcape-dev",
+    "development": "veerxcape-dev",
+    "staging": "veerxcape-staging",
+    "production": "veerxcape-prod"
+  }
+}
+
