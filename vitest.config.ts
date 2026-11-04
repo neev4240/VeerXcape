@@ -25,7 +25,9 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['packages/**/__tests__/**/*.test.ts']
+    include: [
+      'packages/**/__tests__/**/*.test.ts',
+      'functions/**/__tests__/**/*.test.ts'
+    ]
   }
 });
-
