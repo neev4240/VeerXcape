@@ -1,4 +1,9 @@
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import {
+  constantTimeHexEqual,
+  hexToBytes,
+  hmacSha256Hex,
+  sha256Hex
+} from './auditHash.js';
 
 export interface ReplayWindowEvaluation {
   accepted: boolean;
@@ -110,7 +115,7 @@ export function computeStm32HmacSignature(params: {
   sequenceNumber: number;
   rawBody: string;
 }): string {
-  const bodySha256 = createHash('sha256').update(params.rawBody, 'utf8').digest('hex');
+  const bodySha256 = sha256Hex(params.rawBody);
   const canonical = [
     params.serialNumber.trim().toUpperCase(),
     params.httpMethod.trim().toUpperCase(),
@@ -121,8 +126,8 @@ export function computeStm32HmacSignature(params: {
     bodySha256
   ].join('\n');
 
-  const keyBuffer = Buffer.from(params.deviceSecretKeyHex, 'hex');
-  return createHmac('sha256', keyBuffer).update(canonical, 'utf8').digest('hex');
+  const keyBytes = hexToBytes(params.deviceSecretKeyHex);
+  return hmacSha256Hex(keyBytes, canonical);
 }
 
 export function verifyStm32HmacSignature(params: {
@@ -153,16 +158,9 @@ export function verifyStm32HmacSignature(params: {
   }
 
   const expectedHex = computeStm32HmacSignature(params);
-  const expectedBuf = Buffer.from(expectedHex, 'hex');
-  const providedBuf = Buffer.from(params.providedSignatureHex, 'hex');
-
-  if (
-    expectedBuf.length !== providedBuf.length ||
-    !timingSafeEqual(expectedBuf, providedBuf)
-  ) {
+  if (!constantTimeHexEqual(expectedHex, params.providedSignatureHex)) {
     return { valid: false, reason: 'HMAC-SHA256 signature verification failed.' };
   }
 
   return { valid: true, reason: 'Valid STM32U575 HMAC-SHA256 signature.' };
 }
-
