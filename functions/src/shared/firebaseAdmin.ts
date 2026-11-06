@@ -3,6 +3,8 @@ import type { FirestoreCollectionName } from '@veerxcape/shared-constants';
 import type { VeerXcapeCustomClaims } from '@veerxcape/shared-types';
 import { AppError } from './errors.js';
 import type {
+  FirestoreQueryOptions,
+  PaginatedQueryResult,
   TransactionContext,
   VeerXcapeBackendRuntime,
   VeerXcapeRuntimeConfig
@@ -139,11 +141,106 @@ export function createFirebaseAdminRuntime(
     },
     async listDocs<T>(
       collection: FirestoreCollectionName,
-      predicate?: (doc: T) => boolean
+      predicateOrOptions?: ((doc: T) => boolean) | FirestoreQueryOptions<T>
     ): Promise<T[]> {
-      const snap = await db.collection(collection).get();
-      const docs = snap.docs.map((d) => d.data() as T);
-      return predicate ? docs.filter(predicate) : docs;
+      const options: FirestoreQueryOptions<T> =
+        typeof predicateOrOptions === 'function'
+          ? { predicate: predicateOrOptions }
+          : (predicateOrOptions ?? {});
+
+      let query: FirebaseFirestore.Query = db.collection(collection);
+
+      if (options.where && options.where.length > 0) {
+        for (const clause of options.where) {
+          query = query.where(clause.field, clause.op, clause.value);
+        }
+      }
+
+      if (options.orderBy && options.orderBy.length > 0) {
+        for (const orderClause of options.orderBy) {
+          query = query.orderBy(orderClause.field, orderClause.direction ?? 'asc');
+        }
+      }
+
+      if (options.startAfterDocId) {
+        const cursorSnap = await db
+          .collection(collection)
+          .doc(options.startAfterDocId)
+          .get();
+        if (cursorSnap.exists) {
+          query = query.startAfter(cursorSnap);
+        }
+      }
+
+      if (
+        typeof options.limit === 'number' &&
+        options.limit > 0 &&
+        !options.predicate
+      ) {
+        query = query.limit(options.limit);
+      }
+
+      const snap = await query.get();
+      let docs = snap.docs.map((d) => d.data() as T);
+
+      if (options.predicate) {
+        docs = docs.filter(options.predicate);
+      }
+
+      if (typeof options.limit === 'number' && options.limit >= 0) {
+        docs = docs.slice(0, options.limit);
+      }
+
+      return docs;
+    },
+    async queryDocsPaginated<T>(
+      collection: FirestoreCollectionName,
+      options: FirestoreQueryOptions<T>
+    ): Promise<PaginatedQueryResult<T>> {
+      const pageSize = options.limit && options.limit > 0 ? options.limit : 25;
+      let query: FirebaseFirestore.Query = db.collection(collection);
+
+      if (options.where && options.where.length > 0) {
+        for (const clause of options.where) {
+          query = query.where(clause.field, clause.op, clause.value);
+        }
+      }
+
+      if (options.orderBy && options.orderBy.length > 0) {
+        for (const orderClause of options.orderBy) {
+          query = query.orderBy(orderClause.field, orderClause.direction ?? 'asc');
+        }
+      }
+
+      if (options.startAfterDocId) {
+        const cursorSnap = await db
+          .collection(collection)
+          .doc(options.startAfterDocId)
+          .get();
+        if (cursorSnap.exists) {
+          query = query.startAfter(cursorSnap);
+        }
+      }
+
+      if (!options.predicate) {
+        query = query.limit(pageSize + 1);
+      }
+
+      const snap = await query.get();
+      const matchedDocs = options.predicate
+        ? snap.docs.filter((d) => options.predicate!(d.data() as T))
+        : snap.docs;
+
+      const hasMore = matchedDocs.length > pageSize;
+      const pageDocs = matchedDocs.slice(0, pageSize);
+      const nextCursorDocId =
+        hasMore && pageDocs.length > 0 ? pageDocs[pageDocs.length - 1].id : null;
+
+      return {
+        items: pageDocs.map((d) => d.data() as T),
+        nextCursorDocId,
+        hasMore
+      };
     },
     async runTransaction<R>(fn: (tx: TransactionContext) => Promise<R>): Promise<R> {
       return db.runTransaction(async (firestoreTx) => {

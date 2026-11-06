@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import {
   FIRESTORE_COLLECTIONS,
-  UNIQUE_LOCK_KEYS
+  UNIQUE_LOCK_KEYS,
+  type UserRoleCode
 } from '@veerxcape/shared-constants';
 import {
   computeLocationFreshness,
@@ -10,9 +11,11 @@ import {
   verifyStm32HmacSignature
 } from '@veerxcape/shared-services';
 import type {
+  CompanyDocument,
   DeviceDocument,
   DeviceHeartbeatDocument,
   DeviceKeyVaultDocument,
+  ShowroomDocument,
   SystemConfigurationDocument,
   TelemetryDocument,
   UniqueLockDocument,
@@ -20,7 +23,9 @@ import type {
   VehicleDocument
 } from '@veerxcape/shared-types';
 import {
-  deviceSerialSchema,
+  deviceKeyRotationPayloadSchema,
+  deviceProvisionPayloadSchema,
+  deviceRevocationPayloadSchema,
   iotEventsBatchPayloadSchema,
   iotHeartbeatPayloadSchema,
   iotSignedHeadersSchema,
@@ -59,6 +64,7 @@ export class DeviceAndIotService {
    */
   async provisionDevice(params: {
     actorUser: UserDocument;
+    actorRole?: UserRoleCode;
     serialNumber: string;
     imei: string;
     simIccid: string;
@@ -69,7 +75,53 @@ export class DeviceAndIotService {
     device: DeviceDocument;
     oneTimeProvisioningHmacSecretHex: string;
   }> {
-    const cleanSerial = deviceSerialSchema.parse(params.serialNumber);
+    const parsed = deviceProvisionPayloadSchema.parse({
+      serialNumber: params.serialNumber,
+      imei: params.imei,
+      simIccid: params.simIccid,
+      firmwareVersion: params.firmwareVersion,
+      allocatedCompanyId: params.allocatedCompanyId,
+      allocatedShowroomId: params.allocatedShowroomId
+    });
+    const cleanSerial = parsed.serialNumber;
+
+    // Enforce cross-tenant showroom/company consistency when tenant documents exist
+    const [allocatedCompany, allocatedShowroom] = await Promise.all([
+      this.runtime.getDoc<CompanyDocument>(
+        FIRESTORE_COLLECTIONS.COMPANIES,
+        parsed.allocatedCompanyId
+      ),
+      this.runtime.getDoc<ShowroomDocument>(
+        FIRESTORE_COLLECTIONS.SHOWROOMS,
+        parsed.allocatedShowroomId
+      )
+    ]);
+
+    if (allocatedCompany && allocatedCompany.status !== 'ACTIVE') {
+      throw new AppError(
+        403,
+        'FORBIDDEN',
+        'Cannot allocate hardware to a suspended parent company.'
+      );
+    }
+
+    if (allocatedShowroom) {
+      if (allocatedShowroom.companyId !== parsed.allocatedCompanyId) {
+        throw new AppError(
+          403,
+          'TENANT_ISOLATION_VIOLATION',
+          'Cross-tenant allocation blocked: showroom does not belong to the specified parent company.'
+        );
+      }
+      if (allocatedShowroom.status !== 'ACTIVE') {
+        throw new AppError(
+          403,
+          'FORBIDDEN',
+          'Cannot allocate hardware to a suspended showroom.'
+        );
+      }
+    }
+
     const deviceId = `dev_${randomUUID().slice(0, 12)}`;
     const nowIso = this.runtime.now().toISOString();
 
@@ -83,12 +135,12 @@ export class DeviceAndIotService {
       id: deviceId,
       serialNumber: cleanSerial,
       mcuModel: 'STM32U575RIT6',
-      firmwareVersion: params.firmwareVersion,
-      imei: params.imei,
-      simIccid: params.simIccid,
+      firmwareVersion: parsed.firmwareVersion,
+      imei: parsed.imei,
+      simIccid: parsed.simIccid,
       secretVersion: 1,
-      allocatedCompanyId: params.allocatedCompanyId,
-      allocatedShowroomId: params.allocatedShowroomId,
+      allocatedCompanyId: parsed.allocatedCompanyId,
+      allocatedShowroomId: parsed.allocatedShowroomId,
       assignedVehicleId: null,
       status: 'PROVISIONED',
       lastSequenceNumber: 0,
@@ -141,15 +193,15 @@ export class DeviceAndIotService {
 
     await this.audit.appendAuditLog({
       actorUserId: params.actorUser.uid,
-      actorRole: params.actorUser.primaryRole,
+      actorRole: params.actorRole ?? params.actorUser.primaryRole,
       action: 'DEVICE_PROVISIONED',
       severity: 'SENSITIVE',
       targetCollection: FIRESTORE_COLLECTIONS.DEVICES,
       targetDocumentId: deviceId,
       metadata: {
         serialNumber: cleanSerial,
-        allocatedCompanyId: params.allocatedCompanyId,
-        allocatedShowroomId: params.allocatedShowroomId
+        allocatedCompanyId: parsed.allocatedCompanyId,
+        allocatedShowroomId: parsed.allocatedShowroomId
       }
     });
 
@@ -164,12 +216,21 @@ export class DeviceAndIotService {
    */
   async rotateDeviceKey(params: {
     actorUser: UserDocument;
+    actorRole?: UserRoleCode;
     deviceId: string;
+    reason?: string;
   }): Promise<{
     device: DeviceDocument;
     newSecretVersion: number;
     oneTimeNewHmacSecretHex: string;
   }> {
+    if (!params.deviceId || params.deviceId.trim().length < 3) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Valid deviceId is required.');
+    }
+    const parsedRotation = deviceKeyRotationPayloadSchema.parse({
+      reason: params.reason
+    });
+
     const device = await this.runtime.getDoc<DeviceDocument>(
       FIRESTORE_COLLECTIONS.DEVICES,
       params.deviceId
@@ -181,6 +242,14 @@ export class DeviceAndIotService {
 
     if (!device || !vault) {
       throw new AppError(404, 'NOT_FOUND', 'Device or key vault not found.');
+    }
+
+    if (device.status === 'REVOKED' || vault.status === 'REVOKED') {
+      throw new AppError(
+        409,
+        'CONFLICT',
+        'Cannot rotate HMAC key for a revoked device.'
+      );
     }
 
     const now = this.runtime.now();
@@ -240,11 +309,12 @@ export class DeviceAndIotService {
 
     await this.audit.appendAuditLog({
       actorUserId: params.actorUser.uid,
-      actorRole: params.actorUser.primaryRole,
+      actorRole: params.actorRole ?? params.actorUser.primaryRole,
       action: 'DEVICE_KEY_ROTATED',
       severity: 'CRITICAL',
       targetCollection: FIRESTORE_COLLECTIONS.DEVICES,
       targetDocumentId: device.id,
+      reason: parsedRotation.reason,
       metadata: {
         previousVersion: vault.activeKeyVersion,
         newVersion
@@ -263,9 +333,17 @@ export class DeviceAndIotService {
    */
   async revokeDevice(params: {
     actorUser: UserDocument;
+    actorRole?: UserRoleCode;
     deviceId: string;
     reason: string;
   }): Promise<DeviceDocument> {
+    if (!params.deviceId || params.deviceId.trim().length < 3) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Valid deviceId is required.');
+    }
+    const { reason: cleanReason } = deviceRevocationPayloadSchema.parse({
+      reason: params.reason
+    });
+
     const device = await this.runtime.getDoc<DeviceDocument>(
       FIRESTORE_COLLECTIONS.DEVICES,
       params.deviceId
@@ -303,12 +381,12 @@ export class DeviceAndIotService {
 
     await this.audit.appendAuditLog({
       actorUserId: params.actorUser.uid,
-      actorRole: params.actorUser.primaryRole,
+      actorRole: params.actorRole ?? params.actorUser.primaryRole,
       action: 'DEVICE_REVOKED',
       severity: 'CRITICAL',
       targetCollection: FIRESTORE_COLLECTIONS.DEVICES,
       targetDocumentId: device.id,
-      reason: params.reason,
+      reason: cleanReason,
       metadata: { serialNumber: device.serialNumber }
     });
 

@@ -45,7 +45,7 @@ export const AUTHORITY_DEPARTMENTS = {
 export type AuthorityDepartment = (typeof AUTHORITY_DEPARTMENTS)[keyof typeof AUTHORITY_DEPARTMENTS];
 
 // ============================================================================
-// 2. RECONCILED 26 FIRESTORE COLLECTIONS (22 Domain + 4 Server-Only Security)
+// 2. RECONCILED 28 FIRESTORE COLLECTIONS (24 Domain + 4 Server-Only Security)
 // ============================================================================
 export const DOMAIN_COLLECTIONS = {
   USERS: 'users',
@@ -65,6 +65,7 @@ export const DOMAIN_COLLECTIONS = {
   DEVICE_HEARTBEATS: 'deviceHeartbeats',
   TELEMETRY: 'telemetry',
   INCIDENTS: 'incidents',
+  INCIDENT_EVENTS: 'incidentEvents',
   INCIDENT_UPDATES: 'incidentUpdates',
   ALERTS: 'alerts',
   NOTIFICATIONS: 'notifications',

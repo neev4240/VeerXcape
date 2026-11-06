@@ -7,6 +7,7 @@ import { evaluateAndRedactIncidentForAuthority } from '@veerxcape/shared-service
 import type {
   AuthorityDocument,
   IncidentDocument,
+  IncidentEventDocument,
   IncidentUpdateDocument,
   MedicalAuthorityIncidentView,
   PoliceAuthorityIncidentView,
@@ -82,6 +83,8 @@ export class AuthorityService {
     actorUser: UserDocument;
     activeRoles: UserRoleDocument[];
     authorityId: string;
+    limit?: number;
+    startAfterDocId?: string;
   }): Promise<RedactedAuthorityIncidentDTO[]> {
     const { authority, roleDoc } = await this.resolveVerifiedAuthorityContext(
       params
@@ -89,9 +92,23 @@ export class AuthorityService {
 
     const candidateIncidents = await this.runtime.listDocs<IncidentDocument>(
       FIRESTORE_COLLECTIONS.INCIDENTS,
-      (inc) =>
-        inc.location.jurisdictionCode.toUpperCase() ===
-        authority.jurisdictionCode.toUpperCase()
+      {
+        where: [
+          {
+            field: 'location.jurisdictionCode',
+            op: '==',
+            value: authority.jurisdictionCode.toUpperCase()
+          },
+          {
+            field: 'authorizedDepartments',
+            op: 'array-contains',
+            value: authority.department
+          }
+        ],
+        orderBy: [{ field: 'occurredAt', direction: 'desc' }],
+        limit: params.limit ?? 50,
+        startAfterDocId: params.startAfterDocId
+      }
     );
 
     const redactedResults: RedactedAuthorityIncidentDTO[] = [];
@@ -259,6 +276,28 @@ export class AuthorityService {
       createdAt: nowIso
     };
 
+    const eventId = `iev_${randomUUID().slice(0, 12)}`;
+    const eventDoc: IncidentEventDocument = {
+      id: eventId,
+      incidentId: incident.id,
+      vehicleId: incident.vehicleId,
+      deviceId: incident.deviceId ?? null,
+      eventType:
+        parsed.newState === 'RESOLVED' ? 'RESOLVED' : 'STATUS_TRANSITION',
+      actorUserId: params.actorUser.uid,
+      actorRole: roleDoc.role as UserRoleCode,
+      summary: `Authority (${authority.department}) updated state from ${incident.lifecycleState} to ${parsed.newState}.`,
+      metadata: {
+        authorityId: authority.id,
+        department: authority.department,
+        previousState: incident.lifecycleState,
+        newState: parsed.newState,
+        dispatchReferenceCode: parsed.dispatchReferenceCode ?? null
+      },
+      occurredAt: nowIso,
+      createdAt: nowIso
+    };
+
     await this.runtime.runTransaction(async (tx) => {
       await tx.setDoc(
         FIRESTORE_COLLECTIONS.INCIDENTS,
@@ -269,6 +308,11 @@ export class AuthorityService {
         FIRESTORE_COLLECTIONS.INCIDENT_UPDATES,
         updateId,
         updateDoc
+      );
+      await tx.setDoc(
+        FIRESTORE_COLLECTIONS.INCIDENT_EVENTS,
+        eventId,
+        eventDoc
       );
     });
 

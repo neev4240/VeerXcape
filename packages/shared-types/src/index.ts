@@ -380,7 +380,7 @@ export interface TelemetryDocument {
 }
 
 // ============================================================================
-// 6. DOMAIN COLLECTIONS 17..23: INCIDENTS, ALERTS, NOTIFICATIONS & GOVERNANCE
+// 6. DOMAIN COLLECTIONS 17..24: INCIDENTS, EVENTS, ALERTS, NOTIFICATIONS & GOVERNANCE
 // ============================================================================
 export type IncidentSeverity = 'INFO' | 'WARNING' | 'HIGH' | 'CRITICAL';
 
@@ -442,6 +442,26 @@ export interface IncidentDocument {
   createdAt: string;
   updatedAt: string;
   resolvedAt?: string | null;
+}
+
+export interface IncidentEventDocument {
+  id: string;
+  incidentId: string;
+  vehicleId: string;
+  deviceId?: string | null;
+  eventType:
+    | 'INCIDENT_REPORTED'
+    | 'AUTHORITY_NOTIFIED'
+    | 'OWNER_NOTIFIED'
+    | 'STATUS_TRANSITION'
+    | 'TELEMETRY_SNAPSHOT_ATTACHED'
+    | 'RESOLVED';
+  actorUserId?: string | null;
+  actorRole: UserRoleCode | 'SYSTEM' | 'HARDWARE_DEVICE';
+  summary: string;
+  metadata?: Record<string, unknown>;
+  occurredAt: string;
+  createdAt: string;
 }
 
 export interface IncidentUpdateDocument {
@@ -548,7 +568,7 @@ export interface SystemConfigurationDocument {
 }
 
 // ============================================================================
-// 7. SERVER-ONLY COLLECTIONS 24..26 (+ _deviceKeyVault)
+// 7. SERVER-ONLY COLLECTIONS 25..28 (_uniqueLocks, _authSecrets, _otpChallenges, _deviceKeyVault)
 // ============================================================================
 export interface UniqueLockDocument {
   lockKey: string;

@@ -74,6 +74,42 @@ export interface VeerXcapeRuntimeConfig {
   secretManagerEnabled: boolean;
 }
 
+export type FirestoreFilterOp =
+  | '=='
+  | '!='
+  | '<'
+  | '<='
+  | '>'
+  | '>='
+  | 'in'
+  | 'array-contains'
+  | 'array-contains-any';
+
+export interface FirestoreWhereClause {
+  field: string;
+  op: FirestoreFilterOp;
+  value: unknown;
+}
+
+export interface FirestoreOrderByClause {
+  field: string;
+  direction?: 'asc' | 'desc';
+}
+
+export interface FirestoreQueryOptions<T = unknown> {
+  where?: FirestoreWhereClause[];
+  orderBy?: FirestoreOrderByClause[];
+  limit?: number;
+  startAfterDocId?: string;
+  predicate?: (doc: T) => boolean;
+}
+
+export interface PaginatedQueryResult<T> {
+  items: T[];
+  nextCursorDocId: string | null;
+  hasMore: boolean;
+}
+
 export interface VeerXcapeBackendRuntime {
   readonly config: VeerXcapeRuntimeConfig;
   readonly auth: AuthProviderAdapter;
@@ -88,8 +124,12 @@ export interface VeerXcapeBackendRuntime {
   ): Promise<void>;
   listDocs<T>(
     collection: FirestoreCollectionName,
-    predicate?: (doc: T) => boolean
+    predicateOrOptions?: ((doc: T) => boolean) | FirestoreQueryOptions<T>
   ): Promise<T[]>;
+  queryDocsPaginated<T>(
+    collection: FirestoreCollectionName,
+    options: FirestoreQueryOptions<T>
+  ): Promise<PaginatedQueryResult<T>>;
   runTransaction<R>(fn: (tx: TransactionContext) => Promise<R>): Promise<R>;
 }
 
@@ -173,6 +213,104 @@ export function createInMemoryTestRuntime(
 
   const cloneParse = <T>(raw: string | undefined): T | null =>
     raw ? (JSON.parse(raw) as T) : null;
+
+  const getFieldByPath = (obj: unknown, fieldPath: string): unknown => {
+    const parts = fieldPath.split('.');
+    let current: unknown = obj;
+    for (const part of parts) {
+      if (current === null || current === undefined || typeof current !== 'object') {
+        return undefined;
+      }
+      current = (current as Record<string, unknown>)[part];
+    }
+    return current;
+  };
+
+  const matchesWhereClause = (doc: unknown, clause: FirestoreWhereClause): boolean => {
+    const fieldVal = getFieldByPath(doc, clause.field);
+    const targetVal = clause.value;
+    switch (clause.op) {
+      case '==':
+        return fieldVal === targetVal;
+      case '!=':
+        return fieldVal !== targetVal;
+      case '<':
+        return (
+          (typeof fieldVal === 'number' && typeof targetVal === 'number' && fieldVal < targetVal) ||
+          (typeof fieldVal === 'string' && typeof targetVal === 'string' && fieldVal < targetVal)
+        );
+      case '<=':
+        return (
+          (typeof fieldVal === 'number' && typeof targetVal === 'number' && fieldVal <= targetVal) ||
+          (typeof fieldVal === 'string' && typeof targetVal === 'string' && fieldVal <= targetVal)
+        );
+      case '>':
+        return (
+          (typeof fieldVal === 'number' && typeof targetVal === 'number' && fieldVal > targetVal) ||
+          (typeof fieldVal === 'string' && typeof targetVal === 'string' && fieldVal > targetVal)
+        );
+      case '>=':
+        return (
+          (typeof fieldVal === 'number' && typeof targetVal === 'number' && fieldVal >= targetVal) ||
+          (typeof fieldVal === 'string' && typeof targetVal === 'string' && fieldVal >= targetVal)
+        );
+      case 'in':
+        return Array.isArray(targetVal) && targetVal.includes(fieldVal);
+      case 'array-contains':
+        return Array.isArray(fieldVal) && fieldVal.includes(targetVal);
+      case 'array-contains-any':
+        return (
+          Array.isArray(fieldVal) &&
+          Array.isArray(targetVal) &&
+          targetVal.some((item) => fieldVal.includes(item))
+        );
+      default:
+        return false;
+    }
+  };
+
+  const executeInMemoryQuery = <T>(
+    collection: FirestoreCollectionName,
+    options: FirestoreQueryOptions<T>
+  ): Array<{ docId: string; data: T }> => {
+    const col = ensureCollectionMap(collection);
+    let entries: Array<{ docId: string; data: T }> = [];
+    for (const [docId, raw] of col.entries()) {
+      const parsed = JSON.parse(raw) as T;
+      if (options.where && !options.where.every((c) => matchesWhereClause(parsed, c))) {
+        continue;
+      }
+      if (options.predicate && !options.predicate(parsed)) {
+        continue;
+      }
+      entries.push({ docId, data: parsed });
+    }
+
+    if (options.orderBy && options.orderBy.length > 0) {
+      const orderClauses = options.orderBy;
+      entries.sort((a, b) => {
+        for (const clause of orderClauses) {
+          const av = getFieldByPath(a.data, clause.field);
+          const bv = getFieldByPath(b.data, clause.field);
+          if (av === bv) continue;
+          const dir = clause.direction === 'desc' ? -1 : 1;
+          if (av === undefined || av === null) return 1 * dir;
+          if (bv === undefined || bv === null) return -1 * dir;
+          return av < bv ? -1 * dir : 1 * dir;
+        }
+        return 0;
+      });
+    }
+
+    if (options.startAfterDocId) {
+      const idx = entries.findIndex((e) => e.docId === options.startAfterDocId);
+      if (idx >= 0) {
+        entries = entries.slice(idx + 1);
+      }
+    }
+
+    return entries;
+  };
 
   return {
     config,
@@ -273,17 +411,36 @@ export function createInMemoryTestRuntime(
     },
     async listDocs<T>(
       collection: FirestoreCollectionName,
-      predicate?: (doc: T) => boolean
+      predicateOrOptions?: ((doc: T) => boolean) | FirestoreQueryOptions<T>
     ): Promise<T[]> {
-      const col = ensureCollectionMap(collection);
-      const results: T[] = [];
-      for (const raw of col.values()) {
-        const parsed = JSON.parse(raw) as T;
-        if (!predicate || predicate(parsed)) {
-          results.push(parsed);
-        }
-      }
-      return results;
+      const options: FirestoreQueryOptions<T> =
+        typeof predicateOrOptions === 'function'
+          ? { predicate: predicateOrOptions }
+          : (predicateOrOptions ?? {});
+      const matched = executeInMemoryQuery(collection, options);
+      const sliced =
+        typeof options.limit === 'number' && options.limit >= 0
+          ? matched.slice(0, options.limit)
+          : matched;
+      return sliced.map((e) => e.data);
+    },
+    async queryDocsPaginated<T>(
+      collection: FirestoreCollectionName,
+      options: FirestoreQueryOptions<T>
+    ): Promise<PaginatedQueryResult<T>> {
+      const pageSize = options.limit && options.limit > 0 ? options.limit : 25;
+      const matched = executeInMemoryQuery(collection, options);
+      const hasMore = matched.length > pageSize;
+      const pageEntries = matched.slice(0, pageSize);
+      const nextCursorDocId =
+        hasMore && pageEntries.length > 0
+          ? pageEntries[pageEntries.length - 1].docId
+          : null;
+      return {
+        items: pageEntries.map((e) => e.data),
+        nextCursorDocId,
+        hasMore
+      };
     },
     async runTransaction<R>(fn: (tx: TransactionContext) => Promise<R>): Promise<R> {
       // Snapshot all collections before executing the transaction; restore on error for atomic rollback

@@ -39,11 +39,12 @@ import {
 } from '../index.js';
 
 describe('@veerxcape/shared-services — Stage 1 Architecture & Security Verification', () => {
-  it('1. verifies the reconciled 27 Firestore collection constants (23 domain/config + 4 server-only) and deterministic unique lock keys', () => {
+  it('1. verifies the reconciled 28 Firestore collection constants (24 domain/config + 4 server-only) and deterministic unique lock keys', () => {
     expect(ALL_USER_ROLES).toHaveLength(12);
-    expect(Object.keys(DOMAIN_COLLECTIONS)).toHaveLength(23);
+    expect(Object.keys(DOMAIN_COLLECTIONS)).toHaveLength(24);
     expect(Object.keys(SERVER_ONLY_COLLECTIONS)).toHaveLength(4);
-    expect(Object.keys(FIRESTORE_COLLECTIONS)).toHaveLength(27);
+    expect(Object.keys(FIRESTORE_COLLECTIONS)).toHaveLength(28);
+    expect(DOMAIN_COLLECTIONS.INCIDENT_EVENTS).toBe('incidentEvents');
 
     expect(UNIQUE_LOCK_KEYS.phone('+91 98765-43210')).toBe('phone_+919876543210');
     expect(UNIQUE_LOCK_KEYS.vehicleRegistration('up 32 ab 1234')).toBe('reg_UP32AB1234');
@@ -549,11 +550,12 @@ describe('@veerxcape/shared-services — Stage 1 Architecture & Security Verific
 
     // Audit logs cannot be created, updated, or deleted by any client
     expect(rulesText).toContain('match /auditLogs/{auditId}');
+    expect(rulesText).toContain('match /incidentEvents/{eventId}');
     expect(rulesText).toContain('allow create, update, delete: if false;');
 
     // TTL field overrides exist for high-volume telemetry and heartbeats
     expect(indexesJson.fieldOverrides).toHaveLength(2);
-    expect(indexesJson.indexes.length).toBeGreaterThanOrEqual(20);
+    expect(indexesJson.indexes.length).toBeGreaterThanOrEqual(24);
   });
 });
 

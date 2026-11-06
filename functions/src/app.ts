@@ -5,6 +5,14 @@ import express, {
 } from 'express';
 import cors from 'cors';
 import { ZodError } from 'zod';
+import { FIRESTORE_COLLECTIONS } from '@veerxcape/shared-constants';
+import {
+  deviceKeyRotationPayloadSchema,
+  deviceProvisionPayloadSchema,
+  deviceRevocationPayloadSchema,
+  systemConfigurationUpdatePayloadSchema,
+  userAccountStatusPayloadSchema
+} from '@veerxcape/shared-validation';
 import { AdminService } from './admin/adminService.js';
 import { AuditService } from './audit/auditService.js';
 import { AuthService } from './auth/authService.js';
@@ -127,9 +135,17 @@ export function createVeerXcapeExpressApp(runtime: VeerXcapeBackendRuntime) {
       const ctx = await authService.authenticateBearerToken(
         req.headers.authorization
       );
+      const limit =
+        typeof req.query.limit === 'string'
+          ? Number.parseInt(req.query.limit, 10)
+          : undefined;
+      const startAfterDocId =
+        typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
       const data = await mobileService.getVehicleTelemetryHistory({
         actorUser: ctx.user,
-        vehicleId: req.params.vehicleId
+        vehicleId: req.params.vehicleId,
+        ...(Number.isFinite(limit) ? { limit } : {}),
+        ...(startAfterDocId ? { startAfterDocId } : {})
       });
       res.json({ success: true, data });
     })
@@ -266,10 +282,18 @@ export function createVeerXcapeExpressApp(runtime: VeerXcapeBackendRuntime) {
       const ctx = await authService.authenticateBearerToken(
         req.headers.authorization
       );
+      const limit =
+        typeof req.query.limit === 'string'
+          ? Number.parseInt(req.query.limit, 10)
+          : undefined;
+      const startAfterDocId =
+        typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
       const data = await dealerService.listShowroomVehicles({
         actorUser: ctx.user,
         activeRoles: ctx.activeRoles,
-        showroomId: req.params.showroomId
+        showroomId: req.params.showroomId,
+        ...(Number.isFinite(limit) ? { limit } : {}),
+        ...(startAfterDocId ? { startAfterDocId } : {})
       });
       res.json({ success: true, data });
     })
@@ -317,10 +341,18 @@ export function createVeerXcapeExpressApp(runtime: VeerXcapeBackendRuntime) {
       const ctx = await authService.authenticateBearerToken(
         req.headers.authorization
       );
+      const limit =
+        typeof req.query.limit === 'string'
+          ? Number.parseInt(req.query.limit, 10)
+          : undefined;
+      const startAfterDocId =
+        typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
       const data = await authorityService.listDepartmentIncidents({
         actorUser: ctx.user,
         activeRoles: ctx.activeRoles,
-        authorityId: req.params.authorityId
+        authorityId: req.params.authorityId,
+        ...(Number.isFinite(limit) ? { limit } : {}),
+        ...(startAfterDocId ? { startAfterDocId } : {})
       });
       res.json({ success: true, data });
     })
@@ -441,9 +473,143 @@ export function createVeerXcapeExpressApp(runtime: VeerXcapeBackendRuntime) {
       const ctx = await authService.authenticateBearerToken(
         req.headers.authorization
       );
+      const adminRole = adminService.assertVeerXcapeRole({
+        actorUser: ctx.user,
+        activeRoles: ctx.activeRoles,
+        allowedRoles: ['VEERXCAPE_ADMIN', 'VEERXCAPE_SUPER_ADMIN']
+      });
+      const parsed = deviceProvisionPayloadSchema.parse(req.body);
       const data = await deviceService.provisionDevice({
         actorUser: ctx.user,
-        ...req.body
+        actorRole: adminRole.role,
+        ...parsed
+      });
+      res.json({ success: true, data });
+    })
+  );
+
+  app.post(
+    '/api/v1/admin/devices/:deviceId/rotate-key',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const adminRole = adminService.assertVeerXcapeRole({
+        actorUser: ctx.user,
+        activeRoles: ctx.activeRoles,
+        allowedRoles: ['VEERXCAPE_ADMIN', 'VEERXCAPE_SUPER_ADMIN']
+      });
+      const parsed = deviceKeyRotationPayloadSchema.parse(req.body ?? {});
+      const data = await deviceService.rotateDeviceKey({
+        actorUser: ctx.user,
+        actorRole: adminRole.role,
+        deviceId: req.params.deviceId,
+        reason: parsed.reason
+      });
+      res.json({ success: true, data });
+    })
+  );
+
+  app.post(
+    '/api/v1/admin/devices/:deviceId/revoke',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const adminRole = adminService.assertVeerXcapeRole({
+        actorUser: ctx.user,
+        activeRoles: ctx.activeRoles,
+        allowedRoles: ['VEERXCAPE_ADMIN', 'VEERXCAPE_SUPER_ADMIN']
+      });
+      const parsed = deviceRevocationPayloadSchema.parse(req.body);
+      const data = await deviceService.revokeDevice({
+        actorUser: ctx.user,
+        actorRole: adminRole.role,
+        deviceId: req.params.deviceId,
+        reason: parsed.reason
+      });
+      res.json({ success: true, data });
+    })
+  );
+
+  app.post(
+    '/api/v1/admin/users/:userId/suspend',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const parsed = userAccountStatusPayloadSchema.parse(req.body);
+      const data = await adminService.suspendUserAccount({
+        actorUser: ctx.user,
+        activeRoles: ctx.activeRoles,
+        targetUserId: req.params.userId,
+        reason: parsed.reason
+      });
+      res.json({ success: true, data });
+    })
+  );
+
+  app.post(
+    '/api/v1/admin/users/:userId/reactivate',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const parsed = userAccountStatusPayloadSchema.parse(req.body);
+      const data = await adminService.reactivateUserAccount({
+        actorUser: ctx.user,
+        activeRoles: ctx.activeRoles,
+        targetUserId: req.params.userId,
+        reason: parsed.reason
+      });
+      res.json({ success: true, data });
+    })
+  );
+
+  app.put(
+    '/api/v1/admin/system-config/:configKey',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const parsed = systemConfigurationUpdatePayloadSchema.parse(req.body);
+      const data = await adminService.updateSystemConfiguration({
+        actorUser: ctx.user,
+        activeRoles: ctx.activeRoles,
+        configKey: req.params.configKey,
+        value: parsed.value,
+        reason: parsed.reason
+      });
+      res.json({ success: true, data });
+    })
+  );
+
+  app.post(
+    '/api/v1/admin/notifications/:notificationId/retry',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const adminRole = adminService.assertVeerXcapeRole({
+        actorUser: ctx.user,
+        activeRoles: ctx.activeRoles,
+        allowedRoles: [
+          'VEERXCAPE_SUPPORT',
+          'VEERXCAPE_ADMIN',
+          'VEERXCAPE_SUPER_ADMIN'
+        ]
+      });
+      const data = await notificationService.retryFailedNotification(
+        req.params.notificationId
+      );
+      await auditService.appendAuditLog({
+        actorUserId: ctx.user.uid,
+        actorRole: adminRole.role,
+        action: 'NOTIFICATION_RETRY_TRIGGERED',
+        severity: 'SENSITIVE',
+        targetCollection: FIRESTORE_COLLECTIONS.NOTIFICATIONS,
+        targetDocumentId: req.params.notificationId,
+        metadata: { newStatus: data.status, retryCount: data.retryCount }
       });
       res.json({ success: true, data });
     })

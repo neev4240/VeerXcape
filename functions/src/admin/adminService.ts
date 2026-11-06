@@ -6,6 +6,7 @@ import {
   type UserRoleCode
 } from '@veerxcape/shared-constants';
 import type {
+  AuthSecretsDocument,
   AuthorityDocument,
   CompanyDocument,
   DeviceDocument,
@@ -17,7 +18,14 @@ import type {
   UserRoleDocument,
   VehicleDocument
 } from '@veerxcape/shared-types';
-import { roleAssignmentPayloadSchema } from '@veerxcape/shared-validation';
+import {
+  authorityCreateSchema,
+  companyTenantCreateSchema,
+  roleAssignmentPayloadSchema,
+  showroomCreateSchema,
+  systemConfigurationUpdatePayloadSchema,
+  userAccountStatusPayloadSchema
+} from '@veerxcape/shared-validation';
 import { AuditService } from '../audit/auditService.js';
 import { AppError } from '../shared/errors.js';
 import {
@@ -32,7 +40,7 @@ export class AdminService {
     this.audit = new AuditService(runtime);
   }
 
-  private assertVeerXcapeRole(params: {
+  public assertVeerXcapeRole(params: {
     actorUser: UserDocument;
     activeRoles: UserRoleDocument[];
     allowedRoles: Array<
@@ -131,18 +139,27 @@ export class AdminService {
       allowedRoles: ['VEERXCAPE_ADMIN', 'VEERXCAPE_SUPER_ADMIN']
     });
 
+    const parsed = companyTenantCreateSchema.parse({
+      brandName: params.brandName,
+      oemCode: params.oemCode,
+      registrationNumber: params.registrationNumber,
+      headquartersAddress: params.headquartersAddress,
+      contactEmail: params.contactEmail,
+      contactPhone: params.contactPhone
+    });
+
     const nowIso = this.runtime.now().toISOString();
     const orgId = `org_${randomUUID().slice(0, 12)}`;
     const companyId = `cmp_${randomUUID().slice(0, 12)}`;
 
     const orgDoc: OrganisationDocument = {
       id: orgId,
-      name: params.brandName,
+      name: parsed.brandName,
       type: 'AUTOMOTIVE_PARENT_COMPANY',
-      registrationNumber: params.registrationNumber,
+      registrationNumber: parsed.registrationNumber,
       status: 'ACTIVE',
-      contactEmail: params.contactEmail,
-      contactPhone: params.contactPhone,
+      contactEmail: parsed.contactEmail,
+      contactPhone: parsed.contactPhone,
       approvedBy: params.actorUser.uid,
       createdAt: nowIso,
       updatedAt: nowIso
@@ -151,9 +168,9 @@ export class AdminService {
     const companyDoc: CompanyDocument = {
       id: companyId,
       organisationId: orgId,
-      brandName: params.brandName,
-      oemCode: params.oemCode.trim().toUpperCase(),
-      headquartersAddress: params.headquartersAddress,
+      brandName: parsed.brandName,
+      oemCode: parsed.oemCode.trim().toUpperCase(),
+      headquartersAddress: parsed.headquartersAddress,
       status: 'ACTIVE',
       totalShowrooms: 0,
       totalVehiclesRegistered: 0,
@@ -199,9 +216,20 @@ export class AdminService {
       allowedRoles: ['VEERXCAPE_ADMIN', 'VEERXCAPE_SUPER_ADMIN']
     });
 
+    const parsed = showroomCreateSchema.parse({
+      companyId: params.companyId,
+      name: params.name,
+      dealerCode: params.dealerCode,
+      city: params.city,
+      stateCode: params.stateCode,
+      address: params.address,
+      contactPhone: params.contactPhone,
+      contactEmail: params.contactEmail
+    });
+
     const company = await this.runtime.getDoc<CompanyDocument>(
       FIRESTORE_COLLECTIONS.COMPANIES,
-      params.companyId
+      parsed.companyId
     );
     if (!company) {
       throw new AppError(404, 'NOT_FOUND', 'Parent company not found.');
@@ -209,18 +237,18 @@ export class AdminService {
 
     const nowIso = this.runtime.now().toISOString();
     const showroomId = `shw_${randomUUID().slice(0, 12)}`;
-    const cleanDealerCode = params.dealerCode.trim().toUpperCase();
+    const cleanDealerCode = parsed.dealerCode.trim().toUpperCase();
 
     const showroomDoc: ShowroomDocument = {
       id: showroomId,
       companyId: company.id,
-      name: params.name,
+      name: parsed.name,
       dealerCode: cleanDealerCode,
-      city: params.city,
-      stateCode: params.stateCode.trim().toUpperCase(),
-      address: params.address,
-      contactPhone: params.contactPhone,
-      contactEmail: params.contactEmail,
+      city: parsed.city,
+      stateCode: parsed.stateCode.trim().toUpperCase(),
+      address: parsed.address,
+      contactPhone: parsed.contactPhone,
+      contactEmail: parsed.contactEmail,
       status: 'ACTIVE',
       approvedBy: params.actorUser.uid,
       createdAt: nowIso,
@@ -286,19 +314,30 @@ export class AdminService {
       allowedRoles: ['VEERXCAPE_ADMIN', 'VEERXCAPE_SUPER_ADMIN']
     });
 
+    const parsed = authorityCreateSchema.parse({
+      name: params.name,
+      registrationNumber: params.registrationNumber,
+      department: params.department,
+      jurisdictionState: params.jurisdictionState,
+      jurisdictionDistrict: params.jurisdictionDistrict,
+      jurisdictionCode: params.jurisdictionCode,
+      contactControlRoomPhone: params.contactControlRoomPhone,
+      contactEmail: params.contactEmail
+    });
+
     const nowIso = this.runtime.now().toISOString();
     const orgId = `org_${randomUUID().slice(0, 12)}`;
     const authorityId = `aut_${randomUUID().slice(0, 12)}`;
-    const cleanJurisdiction = params.jurisdictionCode.trim().toUpperCase();
+    const cleanJurisdiction = parsed.jurisdictionCode.trim().toUpperCase();
 
     const orgDoc: OrganisationDocument = {
       id: orgId,
-      name: params.name,
+      name: parsed.name,
       type: 'GOVERNMENT_AUTHORITY',
-      registrationNumber: params.registrationNumber,
+      registrationNumber: parsed.registrationNumber,
       status: 'ACTIVE',
-      contactEmail: params.contactEmail,
-      contactPhone: params.contactControlRoomPhone,
+      contactEmail: parsed.contactEmail,
+      contactPhone: parsed.contactControlRoomPhone,
       approvedBy: params.actorUser.uid,
       createdAt: nowIso,
       updatedAt: nowIso
@@ -307,14 +346,14 @@ export class AdminService {
     const authorityDoc: AuthorityDocument = {
       id: authorityId,
       organisationId: orgId,
-      name: params.name,
-      department: params.department,
-      jurisdictionState: params.jurisdictionState,
-      jurisdictionDistrict: params.jurisdictionDistrict,
+      name: parsed.name,
+      department: parsed.department,
+      jurisdictionState: parsed.jurisdictionState,
+      jurisdictionDistrict: parsed.jurisdictionDistrict,
       jurisdictionCode: cleanJurisdiction,
       verificationStatus: 'VERIFIED',
       verifiedBySuperAdminId: params.actorUser.uid,
-      contactControlRoomPhone: params.contactControlRoomPhone,
+      contactControlRoomPhone: parsed.contactControlRoomPhone,
       createdAt: nowIso,
       updatedAt: nowIso
     };
@@ -367,6 +406,63 @@ export class AdminService {
         : ['VEERXCAPE_ADMIN', 'VEERXCAPE_SUPER_ADMIN']
     });
 
+    // Enforce tenant & resource consistency for scoped role assignments
+    if (parsed.scopeType === 'SHOWROOM') {
+      const showroom = await this.runtime.getDoc<ShowroomDocument>(
+        FIRESTORE_COLLECTIONS.SHOWROOMS,
+        parsed.scopeId
+      );
+      if (showroom && parsed.companyId && showroom.companyId !== parsed.companyId) {
+        throw new AppError(
+          403,
+          'TENANT_ISOLATION_VIOLATION',
+          'Cross-tenant role assignment blocked: showroom does not belong to the specified parent company.'
+        );
+      }
+      if (showroom && parsed.showroomId && parsed.showroomId !== parsed.scopeId) {
+        throw new AppError(
+          403,
+          'TENANT_ISOLATION_VIOLATION',
+          'Showroom role assignment scopeId must match showroomId.'
+        );
+      }
+    } else if (parsed.scopeType === 'COMPANY') {
+      if (parsed.companyId && parsed.companyId !== parsed.scopeId) {
+        throw new AppError(
+          403,
+          'TENANT_ISOLATION_VIOLATION',
+          'Company role assignment scopeId must match companyId.'
+        );
+      }
+    } else if (parsed.scopeType === 'AUTHORITY') {
+      const authority = await this.runtime.getDoc<AuthorityDocument>(
+        FIRESTORE_COLLECTIONS.AUTHORITIES,
+        parsed.scopeId
+      );
+      if (
+        authority &&
+        parsed.department &&
+        authority.department !== parsed.department
+      ) {
+        throw new AppError(
+          403,
+          'TENANT_ISOLATION_VIOLATION',
+          'Authority role department does not match the target authority organisation.'
+        );
+      }
+      if (
+        authority &&
+        parsed.jurisdictionCode &&
+        authority.jurisdictionCode !== parsed.jurisdictionCode
+      ) {
+        throw new AppError(
+          403,
+          'TENANT_ISOLATION_VIOLATION',
+          'Authority role jurisdictionCode does not match the target authority organisation.'
+        );
+      }
+    }
+
     const nowIso = this.runtime.now().toISOString();
     const roleId = `${parsed.targetUserId}_${parsed.role}_${parsed.scopeId}`;
 
@@ -416,6 +512,10 @@ export class AdminService {
     targetUserId: string;
     reason: string;
   }): Promise<UserDocument> {
+    const { reason: cleanReason } = userAccountStatusPayloadSchema.parse({
+      reason: params.reason
+    });
+
     const adminRole = this.assertVeerXcapeRole({
       ...params,
       allowedRoles: ['VEERXCAPE_ADMIN', 'VEERXCAPE_SUPER_ADMIN']
@@ -427,6 +527,17 @@ export class AdminService {
     );
     if (!targetUser) {
       throw new AppError(404, 'NOT_FOUND', 'Target user not found.');
+    }
+
+    if (
+      targetUser.primaryRole === 'VEERXCAPE_SUPER_ADMIN' &&
+      adminRole.role !== 'VEERXCAPE_SUPER_ADMIN'
+    ) {
+      throw new AppError(
+        403,
+        'FORBIDDEN',
+        'Only a VEERXCAPE_SUPER_ADMIN may suspend a super-administrator account.'
+      );
     }
 
     const nowIso = this.runtime.now().toISOString();
@@ -451,11 +562,98 @@ export class AdminService {
       severity: 'CRITICAL',
       targetCollection: FIRESTORE_COLLECTIONS.USERS,
       targetDocumentId: targetUser.uid,
-      reason: params.reason,
+      reason: cleanReason,
       metadata: { newSessionVersion: suspendedUser.sessionVersion }
     });
 
     return suspendedUser;
+  }
+
+  /**
+   * Reactivates a suspended or locked user account, increments sessionVersion,
+   * clears failed login lockouts, and writes a critical audit log entry.
+   */
+  async reactivateUserAccount(params: {
+    actorUser: UserDocument;
+    activeRoles: UserRoleDocument[];
+    targetUserId: string;
+    reason: string;
+  }): Promise<UserDocument> {
+    const { reason: cleanReason } = userAccountStatusPayloadSchema.parse({
+      reason: params.reason
+    });
+
+    const adminRole = this.assertVeerXcapeRole({
+      ...params,
+      allowedRoles: ['VEERXCAPE_ADMIN', 'VEERXCAPE_SUPER_ADMIN']
+    });
+
+    const targetUser = await this.runtime.getDoc<UserDocument>(
+      FIRESTORE_COLLECTIONS.USERS,
+      params.targetUserId
+    );
+    if (!targetUser) {
+      throw new AppError(404, 'NOT_FOUND', 'Target user not found.');
+    }
+
+    if (
+      targetUser.primaryRole === 'VEERXCAPE_SUPER_ADMIN' &&
+      adminRole.role !== 'VEERXCAPE_SUPER_ADMIN'
+    ) {
+      throw new AppError(
+        403,
+        'FORBIDDEN',
+        'Only a VEERXCAPE_SUPER_ADMIN may reactivate a super-administrator account.'
+      );
+    }
+
+    const nowIso = this.runtime.now().toISOString();
+    const reactivatedUser: UserDocument = {
+      ...targetUser,
+      status: 'ACTIVE',
+      sessionVersion: targetUser.sessionVersion + 1,
+      updatedAt: nowIso
+    };
+
+    const existingSecrets = await this.runtime.getDoc<AuthSecretsDocument>(
+      FIRESTORE_COLLECTIONS.AUTH_SECRETS,
+      targetUser.uid
+    );
+
+    await this.runtime.runTransaction(async (tx) => {
+      await tx.setDoc(
+        FIRESTORE_COLLECTIONS.USERS,
+        targetUser.uid,
+        reactivatedUser
+      );
+      if (existingSecrets) {
+        await tx.setDoc<AuthSecretsDocument>(
+          FIRESTORE_COLLECTIONS.AUTH_SECRETS,
+          targetUser.uid,
+          {
+            ...existingSecrets,
+            failedLoginAttempts: 0,
+            lockoutUntil: null
+          }
+        );
+      }
+    });
+
+    await this.audit.appendAuditLog({
+      actorUserId: params.actorUser.uid,
+      actorRole: adminRole.role,
+      action: 'USER_ACCOUNT_REACTIVATED',
+      severity: 'CRITICAL',
+      targetCollection: FIRESTORE_COLLECTIONS.USERS,
+      targetDocumentId: targetUser.uid,
+      reason: cleanReason,
+      metadata: {
+        previousStatus: targetUser.status,
+        newSessionVersion: reactivatedUser.sessionVersion
+      }
+    });
+
+    return reactivatedUser;
   }
 
   /**
@@ -466,7 +664,16 @@ export class AdminService {
     activeRoles: UserRoleDocument[];
     configKey: string;
     value: Record<string, unknown>;
+    reason?: string;
   }): Promise<SystemConfigurationDocument> {
+    if (!params.configKey || params.configKey.trim().length < 3) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Valid configKey is required.');
+    }
+    const parsed = systemConfigurationUpdatePayloadSchema.parse({
+      value: params.value,
+      reason: params.reason
+    });
+
     const superRole = this.assertVeerXcapeRole({
       ...params,
       allowedRoles: ['VEERXCAPE_SUPER_ADMIN']
@@ -480,7 +687,7 @@ export class AdminService {
     const nowIso = this.runtime.now().toISOString();
     const doc: SystemConfigurationDocument = {
       id: params.configKey,
-      value: params.value,
+      value: parsed.value,
       version: existing ? existing.version + 1 : 1,
       updatedBySuperAdminId: params.actorUser.uid,
       updatedAt: nowIso
@@ -499,6 +706,7 @@ export class AdminService {
       severity: 'CRITICAL',
       targetCollection: FIRESTORE_COLLECTIONS.SYSTEM_CONFIGURATION,
       targetDocumentId: params.configKey,
+      reason: parsed.reason,
       metadata: { version: doc.version }
     });
 

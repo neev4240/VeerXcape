@@ -52,13 +52,15 @@ export class AuditService {
   }
 
   async appendAuditLog(params: AppendAuditLogParams): Promise<AuditLogDocument> {
-    const existingLogs = await this.runtime.listDocs<AuditLogDocument>(
-      FIRESTORE_COLLECTIONS.AUDIT_LOGS
+    const latestLogs = await this.runtime.listDocs<AuditLogDocument>(
+      FIRESTORE_COLLECTIONS.AUDIT_LOGS,
+      {
+        orderBy: [{ field: 'sequenceIndex', direction: 'desc' }],
+        limit: 1
+      }
     );
-    existingLogs.sort((a, b) => a.sequenceIndex - b.sequenceIndex);
 
-    const lastEntry =
-      existingLogs.length > 0 ? existingLogs[existingLogs.length - 1] : null;
+    const lastEntry = latestLogs.length > 0 ? latestLogs[0] : null;
     const sequenceIndex = lastEntry ? lastEntry.sequenceIndex + 1 : 1;
     const prevAuditHash = lastEntry ? lastEntry.entryHash : GENESIS_AUDIT_HASH;
 
@@ -113,9 +115,11 @@ export class AuditService {
     reason: string | null;
   }> {
     const entries = await this.runtime.listDocs<AuditLogDocument>(
-      FIRESTORE_COLLECTIONS.AUDIT_LOGS
+      FIRESTORE_COLLECTIONS.AUDIT_LOGS,
+      {
+        orderBy: [{ field: 'sequenceIndex', direction: 'asc' }]
+      }
     );
-    entries.sort((a, b) => a.sequenceIndex - b.sequenceIndex);
     const result = verifyAuditChainIntegrity(entries, GENESIS_AUDIT_HASH);
     return {
       valid: result.valid,

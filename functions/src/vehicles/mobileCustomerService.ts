@@ -58,15 +58,30 @@ export class MobileCustomerService {
     ] = await Promise.all([
       this.runtime.listDocs<VehicleOwnerDocument>(
         FIRESTORE_COLLECTIONS.VEHICLE_OWNERS,
-        (o) => o.userId === uid && o.status === 'ACTIVE'
+        {
+          where: [
+            { field: 'userId', op: '==', value: uid },
+            { field: 'status', op: '==', value: 'ACTIVE' }
+          ]
+        }
       ),
       this.runtime.listDocs<FamilyMembershipDocument>(
         FIRESTORE_COLLECTIONS.FAMILY_MEMBERSHIPS,
-        (m) => m.familyUserId === uid && m.status === 'ACTIVE'
+        {
+          where: [
+            { field: 'familyUserId', op: '==', value: uid },
+            { field: 'status', op: '==', value: 'ACTIVE' }
+          ]
+        }
       ),
       this.runtime.listDocs<VehicleDriverDocument>(
         FIRESTORE_COLLECTIONS.VEHICLE_DRIVERS,
-        (d) => d.driverUserId === uid && d.status === 'ACTIVE'
+        {
+          where: [
+            { field: 'driverUserId', op: '==', value: uid },
+            { field: 'status', op: '==', value: 'ACTIVE' }
+          ]
+        }
       )
     ]);
 
@@ -191,24 +206,45 @@ export class MobileCustomerService {
       });
     }
 
+    const ownedVehicleIdList = Array.from(ownedVehicleIds);
+    const incidentEligibleVehicleIdList = Array.from(incidentEligibleVehicleIds);
+
     const [familyMembershipsForOwnedVehicles, incidents, emergencyContacts] =
       await Promise.all([
-        ownedVehicleIds.size > 0
+        ownedVehicleIdList.length > 0
           ? this.runtime.listDocs<FamilyMembershipDocument>(
               FIRESTORE_COLLECTIONS.FAMILY_MEMBERSHIPS,
-              (m) => ownedVehicleIds.has(m.vehicleId)
+              {
+                where: [
+                  { field: 'vehicleId', op: 'in', value: ownedVehicleIdList }
+                ]
+              }
             )
           : Promise.resolve([]),
-        incidentEligibleVehicleIds.size > 0
+        incidentEligibleVehicleIdList.length > 0
           ? this.runtime.listDocs<IncidentDocument>(
               FIRESTORE_COLLECTIONS.INCIDENTS,
-              (inc) => incidentEligibleVehicleIds.has(inc.vehicleId)
+              {
+                where: [
+                  {
+                    field: 'vehicleId',
+                    op: 'in',
+                    value: incidentEligibleVehicleIdList
+                  }
+                ],
+                orderBy: [{ field: 'occurredAt', direction: 'desc' }],
+                limit: 50
+              }
             )
           : Promise.resolve([]),
-        ownedVehicleIds.size > 0
+        ownedVehicleIdList.length > 0
           ? this.runtime.listDocs<EmergencyContactDocument>(
               FIRESTORE_COLLECTIONS.EMERGENCY_CONTACTS,
-              (c) => ownedVehicleIds.has(c.vehicleId)
+              {
+                where: [
+                  { field: 'vehicleId', op: 'in', value: ownedVehicleIdList }
+                ]
+              }
             )
           : Promise.resolve([])
       ]);
@@ -229,6 +265,7 @@ export class MobileCustomerService {
     actorUser: UserDocument;
     vehicleId: string;
     limit?: number;
+    startAfterDocId?: string;
   }): Promise<TelemetryDocument[]> {
     const vehicle = await this.runtime.getDoc<VehicleDocument>(
       FIRESTORE_COLLECTIONS.VEHICLES,
@@ -265,13 +302,15 @@ export class MobileCustomerService {
       throw new AppError(403, 'FORBIDDEN', accessCheck.reason);
     }
 
-    const records = await this.runtime.listDocs<TelemetryDocument>(
+    return this.runtime.listDocs<TelemetryDocument>(
       FIRESTORE_COLLECTIONS.TELEMETRY,
-      (t) => t.vehicleId === params.vehicleId
+      {
+        where: [{ field: 'vehicleId', op: '==', value: params.vehicleId }],
+        orderBy: [{ field: 'receivedAt', direction: 'desc' }],
+        limit: params.limit ?? 20,
+        startAfterDocId: params.startAfterDocId
+      }
     );
-
-    records.sort((a, b) => Date.parse(b.receivedAt) - Date.parse(a.receivedAt));
-    return records.slice(0, params.limit ?? 20);
   }
 }
 

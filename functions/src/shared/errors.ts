@@ -3,6 +3,7 @@ export type ErrorCode =
   | 'VALIDATION_ERROR'
   | 'UNAUTHORIZED'
   | 'FORBIDDEN'
+  | 'TENANT_ISOLATION_VIOLATION'
   | 'NOT_FOUND'
   | 'CONFLICT'
   | 'RATE_LIMITED'

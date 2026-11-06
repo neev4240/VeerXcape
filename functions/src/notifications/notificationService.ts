@@ -34,7 +34,10 @@ export class NotificationService {
   ): Promise<NotificationDocument> {
     const existing = await this.runtime.listDocs<NotificationDocument>(
       FIRESTORE_COLLECTIONS.NOTIFICATIONS,
-      (n) => n.dedupeKey === params.dedupeKey
+      {
+        where: [{ field: 'dedupeKey', op: '==', value: params.dedupeKey }],
+        limit: 1
+      }
     );
 
     if (existing.length > 0) {

@@ -298,7 +298,12 @@ export class AuthService {
     // Activate any pending vehicle ownerships and vehicles for this owner
     const ownerships = await this.runtime.listDocs<VehicleOwnerDocument>(
       FIRESTORE_COLLECTIONS.VEHICLE_OWNERS,
-      (o) => o.userId === uid && o.status === 'PENDING_ACTIVATION'
+      {
+        where: [
+          { field: 'userId', op: '==', value: uid },
+          { field: 'status', op: '==', value: 'PENDING_ACTIVATION' }
+        ]
+      }
     );
 
     for (const ownership of ownerships) {
@@ -477,7 +482,12 @@ export class AuthService {
 
     const activeRoles = await this.runtime.listDocs<UserRoleDocument>(
       FIRESTORE_COLLECTIONS.USER_ROLES,
-      (r) => r.userId === uid && r.status === 'ACTIVE'
+      {
+        where: [
+          { field: 'userId', op: '==', value: uid },
+          { field: 'status', op: '==', value: 'ACTIVE' }
+        ]
+      }
     );
 
     const profile = await this.runtime.getDoc<UserProfileDocument>(
@@ -618,7 +628,12 @@ export class AuthService {
 
     const activeRoles = await this.runtime.listDocs<UserRoleDocument>(
       FIRESTORE_COLLECTIONS.USER_ROLES,
-      (r) => r.userId === userDoc.uid && r.status === 'ACTIVE'
+      {
+        where: [
+          { field: 'userId', op: '==', value: userDoc.uid },
+          { field: 'status', op: '==', value: 'ACTIVE' }
+        ]
+      }
     );
 
     return {

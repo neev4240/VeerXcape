@@ -346,9 +346,12 @@ export class FamilyAndDriverService {
     const pendingMemberships =
       await this.runtime.listDocs<FamilyMembershipDocument>(
         FIRESTORE_COLLECTIONS.FAMILY_MEMBERSHIPS,
-        (m) =>
-          m.familyUserId === familyUid &&
-          m.status === 'PENDING_OTP_VERIFICATION'
+        {
+          where: [
+            { field: 'familyUserId', op: '==', value: familyUid },
+            { field: 'status', op: '==', value: 'PENDING_OTP_VERIFICATION' }
+          ]
+        }
       );
 
     const activatedVehicleIds: string[] = [];

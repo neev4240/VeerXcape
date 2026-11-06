@@ -14,6 +14,7 @@ import type {
   EmergencyContactDocument,
   FamilyMembershipDocument,
   IncidentDocument,
+  IncidentEventDocument,
   IncidentLocationInfo,
   IncidentSeverity,
   IncidentSource,
@@ -131,10 +132,15 @@ export class IncidentAndAlertEngine {
       );
     }
 
-    // 1. Check idempotencyKey first
+    // 1. Check idempotencyKey first using native Firestore query
     const existingIncidents = await this.runtime.listDocs<IncidentDocument>(
       FIRESTORE_COLLECTIONS.INCIDENTS,
-      (inc) => inc.idempotencyKey === input.idempotencyKey
+      {
+        where: [
+          { field: 'idempotencyKey', op: '==', value: input.idempotencyKey }
+        ],
+        limit: 1
+      }
     );
     if (existingIncidents.length > 0) {
       return {
@@ -157,22 +163,34 @@ export class IncidentAndAlertEngine {
       vehicle.primaryOwnerId
     );
 
-    const emergencyContacts = await this.runtime.listDocs<EmergencyContactDocument>(
-      FIRESTORE_COLLECTIONS.EMERGENCY_CONTACTS,
-      (c) => c.vehicleId === vehicle.id
-    );
+    const [emergencyContacts, activeFamilyMembers, activeDrivers] =
+      await Promise.all([
+        this.runtime.listDocs<EmergencyContactDocument>(
+          FIRESTORE_COLLECTIONS.EMERGENCY_CONTACTS,
+          {
+            where: [{ field: 'vehicleId', op: '==', value: vehicle.id }]
+          }
+        ),
+        this.runtime.listDocs<FamilyMembershipDocument>(
+          FIRESTORE_COLLECTIONS.FAMILY_MEMBERSHIPS,
+          {
+            where: [
+              { field: 'vehicleId', op: '==', value: vehicle.id },
+              { field: 'status', op: '==', value: 'ACTIVE' }
+            ]
+          }
+        ),
+        this.runtime.listDocs<VehicleDriverDocument>(
+          FIRESTORE_COLLECTIONS.VEHICLE_DRIVERS,
+          {
+            where: [
+              { field: 'vehicleId', op: '==', value: vehicle.id },
+              { field: 'status', op: '==', value: 'ACTIVE' }
+            ]
+          }
+        )
+      ]);
     emergencyContacts.sort((a, b) => a.priorityOrder - b.priorityOrder);
-
-    const activeFamilyMembers =
-      await this.runtime.listDocs<FamilyMembershipDocument>(
-        FIRESTORE_COLLECTIONS.FAMILY_MEMBERSHIPS,
-        (m) => m.vehicleId === vehicle.id && m.status === 'ACTIVE'
-      );
-
-    const activeDrivers = await this.runtime.listDocs<VehicleDriverDocument>(
-      FIRESTORE_COLLECTIONS.VEHICLE_DRIVERS,
-      (d) => d.vehicleId === vehicle.id && d.status === 'ACTIVE'
-    );
 
     const sharedWithFamilyIds = activeFamilyMembers
       .filter(
@@ -196,6 +214,7 @@ export class IncidentAndAlertEngine {
     const nowIso = this.runtime.now().toISOString();
     const incidentId = `inc_${randomUUID().slice(0, 12)}`;
     const alertId = `alt_${randomUUID().slice(0, 12)}`;
+    const eventId = `iev_${randomUUID().slice(0, 12)}`;
 
     const targetUserIds = Array.from(
       new Set([
@@ -260,9 +279,33 @@ export class IncidentAndAlertEngine {
       createdAt: nowIso
     };
 
+    const initialEventDoc: IncidentEventDocument = {
+      id: eventId,
+      incidentId,
+      vehicleId: vehicle.id,
+      deviceId: input.deviceId ?? vehicle.assignedDeviceId ?? null,
+      eventType: 'INCIDENT_REPORTED',
+      actorUserId: input.triggeredByUserId ?? null,
+      actorRole:
+        input.source === 'HARDWARE_STM32' ? 'HARDWARE_DEVICE' : 'VEHICLE_OWNER',
+      summary: `${simPrefix}${sourceLabel} reported ${input.incidentType} (${input.severity}).`,
+      metadata: {
+        lifecycleState: initialLifecycleState,
+        authorizedDepartments: departments,
+        jurisdictionCode: input.location.jurisdictionCode
+      },
+      occurredAt: input.occurredAt,
+      createdAt: nowIso
+    };
+
     await this.runtime.runTransaction(async (tx) => {
       await tx.setDoc(FIRESTORE_COLLECTIONS.INCIDENTS, incidentId, incidentDoc);
       await tx.setDoc(FIRESTORE_COLLECTIONS.ALERTS, alertId, alertDoc);
+      await tx.setDoc(
+        FIRESTORE_COLLECTIONS.INCIDENT_EVENTS,
+        eventId,
+        initialEventDoc
+      );
     });
 
     // Dispatch role-scoped notifications to eligible recipients
@@ -468,6 +511,27 @@ export class IncidentAndAlertEngine {
       createdAt: nowIso
     };
 
+    const eventId = `iev_${randomUUID().slice(0, 12)}`;
+    const eventDoc: IncidentEventDocument = {
+      id: eventId,
+      incidentId: incident.id,
+      vehicleId: incident.vehicleId,
+      deviceId: incident.deviceId ?? null,
+      eventType:
+        params.action === 'CANCEL_FALSE_ALARM' ? 'RESOLVED' : 'STATUS_TRANSITION',
+      actorUserId: params.actorUser.uid,
+      actorRole: isOwner
+        ? 'VEHICLE_OWNER'
+        : (params.actorUser.primaryRole as UserRoleCode),
+      summary: `Customer ${params.action === 'CANCEL_FALSE_ALARM' ? 'cancelled false alarm' : 'acknowledged incident'}: ${params.note}`,
+      metadata: {
+        previousState: incident.lifecycleState,
+        newState
+      },
+      occurredAt: nowIso,
+      createdAt: nowIso
+    };
+
     await this.runtime.runTransaction(async (tx) => {
       await tx.setDoc(
         FIRESTORE_COLLECTIONS.INCIDENTS,
@@ -478,6 +542,11 @@ export class IncidentAndAlertEngine {
         FIRESTORE_COLLECTIONS.INCIDENT_UPDATES,
         updateId,
         updateDoc
+      );
+      await tx.setDoc(
+        FIRESTORE_COLLECTIONS.INCIDENT_EVENTS,
+        eventId,
+        eventDoc
       );
     });
 

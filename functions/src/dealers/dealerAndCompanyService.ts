@@ -373,6 +373,8 @@ export class DealerAndCompanyService {
     actorUser: UserDocument;
     activeRoles: UserRoleDocument[];
     showroomId: string;
+    limit?: number;
+    startAfterDocId?: string;
   }): Promise<VehicleDocument[]> {
     const showroom = await this.runtime.getDoc<ShowroomDocument>(
       FIRESTORE_COLLECTIONS.SHOWROOMS,
@@ -401,9 +403,14 @@ export class DealerAndCompanyService {
 
     return this.runtime.listDocs<VehicleDocument>(
       FIRESTORE_COLLECTIONS.VEHICLES,
-      (v) =>
-        v.registeredByShowroomId === showroom.id &&
-        v.companyId === showroom.companyId
+      {
+        where: [
+          { field: 'registeredByShowroomId', op: '==', value: showroom.id }
+        ],
+        orderBy: [{ field: 'createdAt', direction: 'desc' }],
+        limit: params.limit ?? 100,
+        startAfterDocId: params.startAfterDocId
+      }
     );
   }
 
@@ -436,18 +443,22 @@ export class DealerAndCompanyService {
       throw new AppError(403, 'FORBIDDEN', accessCheck.reason);
     }
 
-    const showrooms = await this.runtime.listDocs<ShowroomDocument>(
-      FIRESTORE_COLLECTIONS.SHOWROOMS,
-      (s) => s.companyId === company.id
-    );
-    const vehicles = await this.runtime.listDocs<VehicleDocument>(
-      FIRESTORE_COLLECTIONS.VEHICLES,
-      (v) => v.companyId === company.id
-    );
-    const devices = await this.runtime.listDocs<DeviceDocument>(
-      FIRESTORE_COLLECTIONS.DEVICES,
-      (d) => d.allocatedCompanyId === company.id && d.status === 'ACTIVE'
-    );
+    const [showrooms, vehicles, devices] = await Promise.all([
+      this.runtime.listDocs<ShowroomDocument>(FIRESTORE_COLLECTIONS.SHOWROOMS, {
+        where: [{ field: 'companyId', op: '==', value: company.id }],
+        orderBy: [{ field: 'createdAt', direction: 'desc' }]
+      }),
+      this.runtime.listDocs<VehicleDocument>(FIRESTORE_COLLECTIONS.VEHICLES, {
+        where: [{ field: 'companyId', op: '==', value: company.id }],
+        orderBy: [{ field: 'createdAt', direction: 'desc' }]
+      }),
+      this.runtime.listDocs<DeviceDocument>(FIRESTORE_COLLECTIONS.DEVICES, {
+        where: [
+          { field: 'allocatedCompanyId', op: '==', value: company.id },
+          { field: 'status', op: '==', value: 'ACTIVE' }
+        ]
+      })
+    ]);
 
     return {
       company,

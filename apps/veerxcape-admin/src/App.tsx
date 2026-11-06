@@ -535,7 +535,7 @@ export default function App() {
               ['STM32_DEVICE_VAULT', '3. STM32U575 Vault & Key Rotation', Cpu],
               ['AUTHORITY_APPROVALS', '4. Authority Approvals', Building2],
               ['AUDIT_HASH_CHAIN', '5. SHA-256 Audit Hash Chain', FileSearch],
-              ['SYSTEM_CONFIG_COLLECTIONS', '6. 27 Collections & Safety Gates', Database]
+              ['SYSTEM_CONFIG_COLLECTIONS', '6. 28 Collections & Safety Gates', Database]
             ] as const
           ).map(([tabId, label, Icon]) => (
             <button
@@ -591,7 +591,7 @@ export default function App() {
                   {allCollectionNames.length} Collections
                 </div>
                 <div className="text-[11px] text-slate-500 mt-1">
-                  23 Domain + 4 Server-Only (_uniqueLocks, _authSecrets, _otpChallenges,
+                  24 Domain + 4 Server-Only (_uniqueLocks, _authSecrets, _otpChallenges,
                   _deviceKeyVault)
                 </div>
               </div>
@@ -958,7 +958,7 @@ export default function App() {
         )}
 
         {/* ====================================================================
-            TAB 6: 27 RECONCILED COLLECTIONS & PRODUCTION SAFETY GATES
+            TAB 6: 28 RECONCILED COLLECTIONS & PRODUCTION SAFETY GATES
         ==================================================================== */}
         {activeTab === 'SYSTEM_CONFIG_COLLECTIONS' && (
           <div className="space-y-6 text-xs">
@@ -989,7 +989,7 @@ export default function App() {
 
             <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-3">
               <h3 className="text-sm font-bold text-slate-900">
-                Reconciled 27-Collection Inventory (23 Domain + 4 Server-Only Collections)
+                Reconciled 28-Collection Inventory (24 Domain + 4 Server-Only Collections)
               </h3>
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
                 {allCollectionNames.map((colName) => {

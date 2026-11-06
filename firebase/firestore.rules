@@ -266,10 +266,10 @@ service cloud.firestore {
     }
 
     // =========================================================================
-    // 7. INCIDENTS, UPDATES, ALERTS & NOTIFICATIONS (17..20)
+    // 7. INCIDENTS, EVENTS, UPDATES, ALERTS & NOTIFICATIONS (17..21)
     // Note: Government Authority access goes through the audited Cloud Function
-    // API (/api/v1/authority/incidents) so every access is logged in auditLogs
-    // and AUTHORITY_ROAD payloads are strictly anonymized.
+    // API (/api/v1/authority/:authorityId/incidents) so every access is logged
+    // in auditLogs and AUTHORITY_ROAD payloads are strictly anonymized.
     // =========================================================================
     match /incidents/{incidentId} {
       allow read: if isActiveUser() && (
@@ -277,6 +277,19 @@ service cloud.firestore {
         || (
           isActiveFamilyMemberForVehicle(resource.data.vehicleId)
           && request.auth.uid in resource.data.sharedWithFamilyIds
+          && getActiveFamilyMembership(resource.data.vehicleId).data.permissions.canViewIncidentHistory == true
+        )
+        || isActiveDriverForVehicle(resource.data.vehicleId)
+        || isVeerXcapeStaff()
+      );
+      allow write: if false;
+    }
+
+    match /incidentEvents/{eventId} {
+      allow read: if isActiveUser() && (
+        isActiveVehicleOwner(resource.data.vehicleId)
+        || (
+          isActiveFamilyMemberForVehicle(resource.data.vehicleId)
           && getActiveFamilyMembership(resource.data.vehicleId).data.permissions.canViewIncidentHistory == true
         )
         || isActiveDriverForVehicle(resource.data.vehicleId)
@@ -313,7 +326,7 @@ service cloud.firestore {
     }
 
     // =========================================================================
-    // 8. IMMUTABLE AUDIT LOGS, SUPPORT TICKETS & SYSTEM CONFIG (21..23)
+    // 8. IMMUTABLE AUDIT LOGS, SUPPORT TICKETS & SYSTEM CONFIG (22..24)
     // =========================================================================
     match /auditLogs/{auditId} {
       // Strictly read-only for VEERXCAPE_ADMIN and VEERXCAPE_SUPER_ADMIN.

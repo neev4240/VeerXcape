@@ -265,3 +265,86 @@ export const roleAssignmentPayloadSchema = z.object({
   jurisdictionCode: jurisdictionCodeSchema.optional().nullable()
 });
 
+// ============================================================================
+// 6. ADMINISTRATIVE HARDWARE, TENANT & USER GOVERNANCE SCHEMAS
+// ============================================================================
+export const deviceProvisionPayloadSchema = z.object({
+  serialNumber: deviceSerialSchema,
+  imei: z
+    .string()
+    .trim()
+    .regex(/^\d{14,17}$/, 'IMEI must be 14 to 17 numeric digits.'),
+  simIccid: z
+    .string()
+    .trim()
+    .regex(/^\d{18,22}$/, 'SIM ICCID must be 18 to 22 numeric digits.'),
+  firmwareVersion: z.string().trim().min(3).max(32),
+  allocatedCompanyId: z.string().trim().min(3, 'allocatedCompanyId is required.'),
+  allocatedShowroomId: z.string().trim().min(3, 'allocatedShowroomId is required.')
+});
+
+export const deviceKeyRotationPayloadSchema = z.object({
+  reason: z.string().trim().min(3).max(500).optional()
+});
+
+export const deviceRevocationPayloadSchema = z.object({
+  reason: z
+    .string()
+    .trim()
+    .min(5, 'Device revocation reason must be at least 5 characters.')
+    .max(500)
+});
+
+export const userAccountStatusPayloadSchema = z.object({
+  reason: z
+    .string()
+    .trim()
+    .min(5, 'Account status change reason must be at least 5 characters.')
+    .max(500)
+});
+
+export const systemConfigurationUpdatePayloadSchema = z.object({
+  value: z
+    .record(z.string(), z.unknown())
+    .refine(
+      (val) => Object.keys(val).length > 0,
+      'System configuration value object cannot be empty.'
+    ),
+  reason: z.string().trim().min(3).max(500).optional()
+});
+
+export const companyTenantCreateSchema = z.object({
+  brandName: z.string().trim().min(2).max(120),
+  oemCode: z.string().trim().min(2).max(20),
+  registrationNumber: z.string().trim().min(3).max(80),
+  headquartersAddress: z.string().trim().min(3).max(250),
+  contactEmail: z.string().email(),
+  contactPhone: phoneE164Schema
+});
+
+export const showroomCreateSchema = z.object({
+  companyId: z.string().trim().min(3),
+  name: z.string().trim().min(2).max(120),
+  dealerCode: z.string().trim().min(2).max(40),
+  city: z.string().trim().min(2).max(80),
+  stateCode: z.string().trim().min(2).max(10),
+  address: z.string().trim().min(3).max(250),
+  contactPhone: phoneE164Schema,
+  contactEmail: z.string().email()
+});
+
+export const authorityCreateSchema = z.object({
+  name: z.string().trim().min(2).max(150),
+  registrationNumber: z.string().trim().min(3).max(80),
+  department: z.enum([
+    AUTHORITY_DEPARTMENTS.MEDICAL,
+    AUTHORITY_DEPARTMENTS.POLICE,
+    AUTHORITY_DEPARTMENTS.ROAD
+  ]),
+  jurisdictionState: z.string().trim().min(2).max(80),
+  jurisdictionDistrict: z.string().trim().min(2).max(80),
+  jurisdictionCode: jurisdictionCodeSchema,
+  contactControlRoomPhone: z.string().trim().min(4).max(30),
+  contactEmail: z.string().email()
+});
+
