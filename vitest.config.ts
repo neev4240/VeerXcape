@@ -28,6 +28,7 @@ export default defineConfig({
     include: [
       'packages/**/__tests__/**/*.test.ts',
       'functions/**/__tests__/**/*.test.ts'
-    ]
+    ],
+    exclude: ['functions/**/__tests__/emulator/**/*.test.ts']
   }
 });

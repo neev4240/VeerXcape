@@ -10,19 +10,59 @@ import type {
   VeerXcapeRuntimeConfig
 } from './runtime.js';
 
+let firestoreSettingsApplied = false;
+
+function stripUndefinedDeep<T>(value: T): T {
+  if (value === null || value === undefined || typeof value !== 'object') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => stripUndefinedDeep(item)) as unknown as T;
+  }
+  const clean: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (v !== undefined) {
+      clean[k] = stripUndefinedDeep(v);
+    }
+  }
+  return clean as T;
+}
+
 /**
  * Production / Emulator Firebase Admin SDK implementation of VeerXcapeBackendRuntime.
  */
 export function createFirebaseAdminRuntime(
   configOverrides: Partial<VeerXcapeRuntimeConfig> = {}
-): VeerXcapeBackendRuntime {
+): VeerXcapeBackendRuntime & {
+  setFcmBehavior(behavior: 'ACCEPT' | 'RETRYABLE_FAIL' | 'PERMANENT_FAIL'): void;
+} {
+  const projectId =
+    process.env.GCLOUD_PROJECT ||
+    process.env.FIREBASE_PROJECT_ID ||
+    'veerxcape-01';
+
   if (admin.apps.length === 0) {
-    admin.initializeApp();
+    admin.initializeApp({ projectId });
   }
 
   const db = admin.firestore();
+  if (!firestoreSettingsApplied) {
+    try {
+      db.settings({ ignoreUndefinedProperties: true });
+    } catch {
+      // Settings already locked on existing Firestore instance
+    }
+    firestoreSettingsApplied = true;
+  }
+
   const auth = admin.auth();
   const messaging = admin.messaging();
+  const isEmulator = Boolean(
+    process.env.FIRESTORE_EMULATOR_HOST ||
+      process.env.FIREBASE_AUTH_EMULATOR_HOST
+  );
+  let emulatorFcmBehavior: 'ACCEPT' | 'RETRYABLE_FAIL' | 'PERMANENT_FAIL' =
+    'ACCEPT';
 
   const envMode = (process.env.VEERXCAPE_ENV ||
     configOverrides.environment ||
@@ -56,30 +96,68 @@ export function createFirebaseAdminRuntime(
   return {
     config,
     now: () => new Date(),
+    setFcmBehavior: (b) => {
+      emulatorFcmBehavior = b;
+    },
     auth: {
       async ensureUserByPhone({ uid, phoneE164, email, displayName }) {
         try {
           const existing = await auth.getUserByPhoneNumber(phoneE164);
           return { uid: existing.uid };
         } catch {
-          const created = await auth.createUser({
-            ...(uid ? { uid } : {}),
-            phoneNumber: phoneE164,
-            ...(email ? { email } : {}),
-            ...(displayName ? { displayName } : {})
-          });
-          return { uid: created.uid };
+          if (uid) {
+            try {
+              const byUid = await auth.getUser(uid);
+              return { uid: byUid.uid };
+            } catch {
+              // Proceed to createUser
+            }
+          }
+          try {
+            const created = await auth.createUser({
+              ...(uid ? { uid } : {}),
+              phoneNumber: phoneE164,
+              ...(email ? { email } : {}),
+              ...(displayName ? { displayName } : {})
+            });
+            return { uid: created.uid };
+          } catch (createErr) {
+            try {
+              const raced = await auth.getUserByPhoneNumber(phoneE164);
+              return { uid: raced.uid };
+            } catch {
+              if (uid) {
+                const racedByUid = await auth.getUser(uid);
+                return { uid: racedByUid.uid };
+              }
+              throw createErr;
+            }
+          }
         }
       },
       async setCustomClaims(uid, claims) {
-        await auth.setCustomUserClaims(uid, claims);
+        try {
+          await auth.setCustomUserClaims(uid, claims);
+        } catch {
+          await auth.createUser({ uid });
+          await auth.setCustomUserClaims(uid, claims);
+        }
       },
       async createCustomToken(uid, claims) {
-        await auth.setCustomUserClaims(uid, claims);
+        try {
+          await auth.setCustomUserClaims(uid, claims);
+        } catch {
+          await auth.createUser({ uid });
+          await auth.setCustomUserClaims(uid, claims);
+        }
         return auth.createCustomToken(uid, claims);
       },
       async revokeRefreshTokens(uid) {
-        await auth.revokeRefreshTokens(uid);
+        try {
+          await auth.revokeRefreshTokens(uid);
+        } catch {
+          // Ignore if user is not yet in Auth
+        }
       },
       async verifyBearerToken(token) {
         try {
@@ -102,6 +180,26 @@ export function createFirebaseAdminRuntime(
     },
     fcm: {
       async sendToUser({ recipientUserId, title, body, data }) {
+        if (isEmulator) {
+          if (emulatorFcmBehavior === 'ACCEPT') {
+            return {
+              accepted: true,
+              fcmMessageId: `projects/${projectId}/messages/emu_msg_${recipientUserId}_${Date.now()}`
+            };
+          }
+          if (emulatorFcmBehavior === 'RETRYABLE_FAIL') {
+            return {
+              accepted: false,
+              permanentFailure: false,
+              errorCode: 'messaging/internal-error'
+            };
+          }
+          return {
+            accepted: false,
+            permanentFailure: true,
+            errorCode: 'messaging/registration-token-not-registered'
+          };
+        }
         try {
           const msgId = await messaging.send({
             topic: `user_${recipientUserId}`,
@@ -137,7 +235,7 @@ export function createFirebaseAdminRuntime(
       docId: string,
       data: T
     ): Promise<void> {
-      await db.collection(collection).doc(docId).set(data);
+      await db.collection(collection).doc(docId).set(stripUndefinedDeep(data));
     },
     async listDocs<T>(
       collection: FirestoreCollectionName,
@@ -244,23 +342,77 @@ export function createFirebaseAdminRuntime(
     },
     async runTransaction<R>(fn: (tx: TransactionContext) => Promise<R>): Promise<R> {
       return db.runTransaction(async (firestoreTx) => {
+        const readCache = new Map<string, unknown>();
+        const stagedWrites = new Map<
+          string,
+          { collection: FirestoreCollectionName; docId: string; data: object }
+        >();
+        const stagedDeletes = new Set<
+          string
+        >();
+        const stagedDeleteRefs = new Map<
+          string,
+          { collection: FirestoreCollectionName; docId: string }
+        >();
+
+        const keyOf = (collection: FirestoreCollectionName, docId: string) =>
+          `${collection}/${docId}`;
+
         const tx: TransactionContext = {
           async getDoc<T>(collection: FirestoreCollectionName, docId: string) {
-            const snap = await firestoreTx.get(db.collection(collection).doc(docId));
-            return snap.exists ? (snap.data() as T) : null;
+            const key = keyOf(collection, docId);
+            if (stagedDeletes.has(key)) {
+              return null;
+            }
+            const staged = stagedWrites.get(key);
+            if (staged) {
+              return JSON.parse(JSON.stringify(staged.data)) as T;
+            }
+            if (readCache.has(key)) {
+              const cached = readCache.get(key);
+              return cached === null
+                ? null
+                : (JSON.parse(JSON.stringify(cached)) as T);
+            }
+            const snap = await firestoreTx.get(
+              db.collection(collection).doc(docId)
+            );
+            const val = snap.exists ? (snap.data() as T) : null;
+            readCache.set(key, val);
+            return val;
           },
           async setDoc<T extends object>(
             collection: FirestoreCollectionName,
             docId: string,
             data: T
           ) {
-            firestoreTx.set(db.collection(collection).doc(docId), data);
+            const key = keyOf(collection, docId);
+            stagedDeletes.delete(key);
+            stagedDeleteRefs.delete(key);
+            stagedWrites.set(key, {
+              collection,
+              docId,
+              data: stripUndefinedDeep(data)
+            });
           },
           async deleteDoc(collection: FirestoreCollectionName, docId: string) {
-            firestoreTx.delete(db.collection(collection).doc(docId));
+            const key = keyOf(collection, docId);
+            stagedWrites.delete(key);
+            stagedDeletes.add(key);
+            stagedDeleteRefs.set(key, { collection, docId });
           }
         };
-        return fn(tx);
+
+        const result = await fn(tx);
+
+        for (const { collection, docId, data } of stagedWrites.values()) {
+          firestoreTx.set(db.collection(collection).doc(docId), data);
+        }
+        for (const { collection, docId } of stagedDeleteRefs.values()) {
+          firestoreTx.delete(db.collection(collection).doc(docId));
+        }
+
+        return result;
       });
     }
   };

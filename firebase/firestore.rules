@@ -34,45 +34,58 @@ service cloud.firestore {
       return /databases/$(database)/documents/userRoles/$(roleDocId(uid, role, scopeId));
     }
 
+    function userPrimaryRole() {
+      return get(userDocPath(request.auth.uid)).data.primaryRole;
+    }
+
     function hasActivePlatformRole(role) {
-      return isActiveUser()
-        && exists(roleDocPath(request.auth.uid, role, 'PLATFORM'))
-        && get(roleDocPath(request.auth.uid, role, 'PLATFORM')).data.status == 'ACTIVE';
+      let path = roleDocPath(request.auth.uid, role, 'PLATFORM');
+      return userPrimaryRole() == role
+        && exists(path)
+        && get(path).data.status == 'ACTIVE';
     }
 
     function isVeerXcapeStaff() {
-      return hasActivePlatformRole('VEERXCAPE_SUPPORT')
+      return isActiveUser() && (
+        hasActivePlatformRole('VEERXCAPE_SUPPORT')
         || hasActivePlatformRole('VEERXCAPE_ADMIN')
-        || hasActivePlatformRole('VEERXCAPE_SUPER_ADMIN');
+        || hasActivePlatformRole('VEERXCAPE_SUPER_ADMIN')
+      );
     }
 
     function isVeerXcapeAdminOrSuper() {
-      return hasActivePlatformRole('VEERXCAPE_ADMIN')
-        || hasActivePlatformRole('VEERXCAPE_SUPER_ADMIN');
+      return isActiveUser() && (
+        hasActivePlatformRole('VEERXCAPE_ADMIN')
+        || hasActivePlatformRole('VEERXCAPE_SUPER_ADMIN')
+      );
     }
 
     function isSuperAdmin() {
-      return hasActivePlatformRole('VEERXCAPE_SUPER_ADMIN');
+      return isActiveUser() && hasActivePlatformRole('VEERXCAPE_SUPER_ADMIN');
     }
 
     // Multi-tenant Company check (verifies both active role AND active company status)
     function hasActiveCompanyRole(companyId, role) {
-      return isActiveUser()
-        && companyId != null
-        && exists(/databases/$(database)/documents/companies/$(companyId))
-        && get(/databases/$(database)/documents/companies/$(companyId)).data.status == 'ACTIVE'
-        && exists(roleDocPath(request.auth.uid, role, companyId))
-        && get(roleDocPath(request.auth.uid, role, companyId)).data.status == 'ACTIVE';
+      let cPath = /databases/$(database)/documents/companies/$(companyId);
+      let rPath = roleDocPath(request.auth.uid, role, companyId);
+      return companyId != null
+        && userPrimaryRole() == role
+        && exists(rPath)
+        && get(rPath).data.status == 'ACTIVE'
+        && exists(cPath)
+        && get(cPath).data.status == 'ACTIVE';
     }
 
-    // Multi-tenant Showroom check (verifies active role, active showroom, and active parent company)
+    // Multi-tenant Showroom check (verifies active role and active showroom)
     function hasActiveShowroomRole(showroomId, role) {
-      return isActiveUser()
-        && showroomId != null
-        && exists(/databases/$(database)/documents/showrooms/$(showroomId))
-        && get(/databases/$(database)/documents/showrooms/$(showroomId)).data.status == 'ACTIVE'
-        && exists(roleDocPath(request.auth.uid, role, showroomId))
-        && get(roleDocPath(request.auth.uid, role, showroomId)).data.status == 'ACTIVE';
+      let sPath = /databases/$(database)/documents/showrooms/$(showroomId);
+      let rPath = roleDocPath(request.auth.uid, role, showroomId);
+      return showroomId != null
+        && userPrimaryRole() == role
+        && exists(rPath)
+        && get(rPath).data.status == 'ACTIVE'
+        && exists(sPath)
+        && get(sPath).data.status == 'ACTIVE';
     }
 
     function isActiveShowroomStaffOrManager(showroomId) {
@@ -83,7 +96,7 @@ service cloud.firestore {
     // Vehicle ownership, active family membership, and active driver helpers
     function isActiveVehicleOwner(vehicleId) {
       let ownershipPath = /databases/$(database)/documents/vehicleOwners/$(vehicleId + '_' + request.auth.uid);
-      return isActiveUser()
+      return userPrimaryRole() == 'VEHICLE_OWNER'
         && exists(ownershipPath)
         && get(ownershipPath).data.status == 'ACTIVE';
     }
@@ -94,25 +107,61 @@ service cloud.firestore {
 
     function isActiveFamilyMemberForVehicle(vehicleId) {
       let membershipPath = /databases/$(database)/documents/familyMemberships/$(vehicleId + '_' + request.auth.uid);
-      return isActiveUser()
+      return userPrimaryRole() == 'FAMILY_MEMBER'
         && exists(membershipPath)
         && get(membershipPath).data.status == 'ACTIVE';
     }
 
     function isActiveDriverForVehicle(vehicleId) {
       let driverPath = /databases/$(database)/documents/vehicleDrivers/$(vehicleId + '_' + request.auth.uid);
-      return isActiveUser()
+      return userPrimaryRole() == 'DRIVER'
         && exists(driverPath)
         && get(driverPath).data.status == 'ACTIVE';
     }
 
     function canReadVehicle(vehicleId, companyId, showroomId) {
-      return isActiveVehicleOwner(vehicleId)
+      return isActiveUser() && (
+        isActiveVehicleOwner(vehicleId)
         || isActiveFamilyMemberForVehicle(vehicleId)
         || isActiveDriverForVehicle(vehicleId)
         || isActiveShowroomStaffOrManager(showroomId)
         || hasActiveCompanyRole(companyId, 'COMPANY_ADMIN')
-        || isVeerXcapeStaff();
+        || hasActivePlatformRole('VEERXCAPE_SUPPORT')
+        || hasActivePlatformRole('VEERXCAPE_ADMIN')
+        || hasActivePlatformRole('VEERXCAPE_SUPER_ADMIN')
+      );
+    }
+
+    // Verified Government Authority department & jurisdiction check for raw Incident reads.
+    // Note: AUTHORITY_ROAD is intentionally excluded from direct raw Firestore incident reads
+    // because road-department payloads must be anonymized via the Cloud Function gateway.
+    function hasActiveAuthorityIncidentAccess(incidentData) {
+      let jCode = incidentData.location.jurisdictionCode;
+      let medPath = roleDocPath(request.auth.uid, 'AUTHORITY_MEDICAL', jCode);
+      let polPath = roleDocPath(request.auth.uid, 'AUTHORITY_POLICE', jCode);
+      let isVisibleState = incidentData.lifecycleState in [
+        'VISIBLE_TO_AUTHORITY',
+        'AUTHORITY_ACKNOWLEDGED',
+        'DISPATCH_RECORDED_BY_AUTHORITY',
+        'RESPONSE_CONFIRMED',
+        'RESOLVED'
+      ];
+      return isActiveUser()
+        && isVisibleState
+        && (
+          (
+            'MEDICAL' in incidentData.authorizedDepartments
+            && exists(medPath)
+            && get(medPath).data.status == 'ACTIVE'
+            && get(medPath).data.jurisdictionCode == jCode
+          )
+          || (
+            'POLICE' in incidentData.authorizedDepartments
+            && exists(polPath)
+            && get(polPath).data.status == 'ACTIVE'
+            && get(polPath).data.jurisdictionCode == jCode
+          )
+        );
     }
 
     // =========================================================================
@@ -161,24 +210,50 @@ service cloud.firestore {
     }
 
     match /companies/{companyId} {
-      allow read: if hasActiveCompanyRole(companyId, 'COMPANY_ADMIN') || isVeerXcapeStaff();
+      allow read: if isActiveUser() && (
+        hasActiveCompanyRole(companyId, 'COMPANY_ADMIN')
+        || hasActivePlatformRole('VEERXCAPE_SUPPORT')
+        || hasActivePlatformRole('VEERXCAPE_ADMIN')
+        || hasActivePlatformRole('VEERXCAPE_SUPER_ADMIN')
+      );
       allow write: if false;
     }
 
     match /showrooms/{showroomId} {
-      allow read: if isActiveShowroomStaffOrManager(showroomId)
+      allow read: if isActiveUser() && (
+        isActiveShowroomStaffOrManager(showroomId)
         || hasActiveCompanyRole(resource.data.companyId, 'COMPANY_ADMIN')
-        || isVeerXcapeStaff();
+        || hasActivePlatformRole('VEERXCAPE_SUPPORT')
+        || hasActivePlatformRole('VEERXCAPE_ADMIN')
+        || hasActivePlatformRole('VEERXCAPE_SUPER_ADMIN')
+      );
       allow write: if false;
     }
 
     match /authorities/{authorityId} {
-      allow read: if isActiveUser() && (
-        (exists(roleDocPath(request.auth.uid, 'AUTHORITY_MEDICAL', authorityId)) && get(roleDocPath(request.auth.uid, 'AUTHORITY_MEDICAL', authorityId)).data.status == 'ACTIVE')
-        || (exists(roleDocPath(request.auth.uid, 'AUTHORITY_POLICE', authorityId)) && get(roleDocPath(request.auth.uid, 'AUTHORITY_POLICE', authorityId)).data.status == 'ACTIVE')
-        || (exists(roleDocPath(request.auth.uid, 'AUTHORITY_ROAD', authorityId)) && get(roleDocPath(request.auth.uid, 'AUTHORITY_ROAD', authorityId)).data.status == 'ACTIVE')
-        || isVeerXcapeStaff()
-      );
+      allow read: if isActiveUser()
+        && resource.data.verificationStatus == 'VERIFIED'
+        && (
+          (
+            resource.data.department == 'MEDICAL'
+            && exists(roleDocPath(request.auth.uid, 'AUTHORITY_MEDICAL', authorityId))
+            && get(roleDocPath(request.auth.uid, 'AUTHORITY_MEDICAL', authorityId)).data.status == 'ACTIVE'
+            && get(roleDocPath(request.auth.uid, 'AUTHORITY_MEDICAL', authorityId)).data.jurisdictionCode == resource.data.jurisdictionCode
+          )
+          || (
+            resource.data.department == 'POLICE'
+            && exists(roleDocPath(request.auth.uid, 'AUTHORITY_POLICE', authorityId))
+            && get(roleDocPath(request.auth.uid, 'AUTHORITY_POLICE', authorityId)).data.status == 'ACTIVE'
+            && get(roleDocPath(request.auth.uid, 'AUTHORITY_POLICE', authorityId)).data.jurisdictionCode == resource.data.jurisdictionCode
+          )
+          || (
+            resource.data.department == 'ROAD'
+            && exists(roleDocPath(request.auth.uid, 'AUTHORITY_ROAD', authorityId))
+            && get(roleDocPath(request.auth.uid, 'AUTHORITY_ROAD', authorityId)).data.status == 'ACTIVE'
+            && get(roleDocPath(request.auth.uid, 'AUTHORITY_ROAD', authorityId)).data.jurisdictionCode == resource.data.jurisdictionCode
+          )
+          || isVeerXcapeStaff()
+        );
       allow write: if false;
     }
 
@@ -280,9 +355,10 @@ service cloud.firestore {
           && getActiveFamilyMembership(resource.data.vehicleId).data.permissions.canViewIncidentHistory == true
         )
         || isActiveDriverForVehicle(resource.data.vehicleId)
+        || hasActiveAuthorityIncidentAccess(resource.data)
         || isVeerXcapeStaff()
       );
-      allow write: if false;
+      allow create, update, delete: if false;
     }
 
     match /incidentEvents/{eventId} {
@@ -295,7 +371,7 @@ service cloud.firestore {
         || isActiveDriverForVehicle(resource.data.vehicleId)
         || isVeerXcapeStaff()
       );
-      allow write: if false;
+      allow create, update, delete: if false;
     }
 
     match /incidentUpdates/{updateId} {
