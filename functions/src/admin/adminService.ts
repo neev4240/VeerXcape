@@ -6,13 +6,16 @@ import {
   type UserRoleCode
 } from '@veerxcape/shared-constants';
 import type {
+  AuditLogDocument,
   AuthSecretsDocument,
   AuthorityDocument,
   CompanyDocument,
   DeviceDocument,
   IncidentDocument,
+  NotificationDocument,
   OrganisationDocument,
   ShowroomDocument,
+  SupportTicketDocument,
   SystemConfigurationDocument,
   UserDocument,
   UserRoleDocument,
@@ -20,7 +23,9 @@ import type {
 } from '@veerxcape/shared-types';
 import {
   authorityCreateSchema,
+  authorityVerificationStatusPayloadSchema,
   companyTenantCreateSchema,
+  publicContactInquiryPayloadSchema,
   roleAssignmentPayloadSchema,
   showroomCreateSchema,
   systemConfigurationUpdatePayloadSchema,
@@ -712,5 +717,235 @@ export class AdminService {
 
     return doc;
   }
+
+  /**
+   * Updates the verification status (`VERIFIED` or `SUSPENDED`) of an existing Authority organisation.
+   */
+  async updateAuthorityVerificationStatus(params: {
+    actorUser: UserDocument;
+    activeRoles: UserRoleDocument[];
+    authorityId: string;
+    rawInput: unknown;
+  }): Promise<AuthorityDocument> {
+    const adminRole = this.assertVeerXcapeRole({
+      ...params,
+      allowedRoles: ['VEERXCAPE_ADMIN', 'VEERXCAPE_SUPER_ADMIN']
+    });
+    const parsed = authorityVerificationStatusPayloadSchema.parse(
+      params.rawInput
+    );
+
+    const existing = await this.runtime.getDoc<AuthorityDocument>(
+      FIRESTORE_COLLECTIONS.AUTHORITIES,
+      params.authorityId
+    );
+    if (!existing) {
+      throw new AppError(404, 'NOT_FOUND', 'Authority organisation not found.');
+    }
+
+    const nowIso = this.runtime.now().toISOString();
+    const updated: AuthorityDocument = {
+      ...existing,
+      verificationStatus: parsed.verificationStatus,
+      verifiedBySuperAdminId: params.actorUser.uid,
+      updatedAt: nowIso
+    };
+
+    await this.runtime.setDoc(
+      FIRESTORE_COLLECTIONS.AUTHORITIES,
+      params.authorityId,
+      updated
+    );
+
+    await this.audit.appendAuditLog({
+      actorUserId: params.actorUser.uid,
+      actorRole: adminRole.role,
+      action:
+        parsed.verificationStatus === 'VERIFIED'
+          ? 'AUTHORITY_VERIFICATION_APPROVED'
+          : 'AUTHORITY_VERIFICATION_SUSPENDED',
+      severity: 'CRITICAL',
+      targetCollection: FIRESTORE_COLLECTIONS.AUTHORITIES,
+      targetDocumentId: params.authorityId,
+      reason: parsed.reason,
+      metadata: {
+        previousStatus: existing.verificationStatus,
+        newStatus: parsed.verificationStatus
+      }
+    });
+
+    return updated;
+  }
+
+  /**
+   * Returns a full administrative workspace snapshot for the VeerXcape Super-Admin Console.
+   */
+  async getAdminWorkspace(params: {
+    actorUser: UserDocument;
+    activeRoles: UserRoleDocument[];
+  }) {
+    this.assertVeerXcapeRole({
+      ...params,
+      allowedRoles: [
+        'VEERXCAPE_SUPPORT',
+        'VEERXCAPE_ADMIN',
+        'VEERXCAPE_SUPER_ADMIN'
+      ]
+    });
+
+    const [
+      users,
+      userRoles,
+      companies,
+      showrooms,
+      authorities,
+      vehicles,
+      devices,
+      incidents,
+      notifications,
+      auditLogs,
+      auditVerification,
+      systemConfigurations
+    ] = await Promise.all([
+      this.runtime.listDocs<UserDocument>(FIRESTORE_COLLECTIONS.USERS, {
+        limit: 100
+      }),
+      this.runtime.listDocs<UserRoleDocument>(FIRESTORE_COLLECTIONS.USER_ROLES, {
+        limit: 200
+      }),
+      this.runtime.listDocs<CompanyDocument>(FIRESTORE_COLLECTIONS.COMPANIES, {
+        limit: 100
+      }),
+      this.runtime.listDocs<ShowroomDocument>(FIRESTORE_COLLECTIONS.SHOWROOMS, {
+        limit: 100
+      }),
+      this.runtime.listDocs<AuthorityDocument>(
+        FIRESTORE_COLLECTIONS.AUTHORITIES,
+        { limit: 100 }
+      ),
+      this.runtime.listDocs<VehicleDocument>(FIRESTORE_COLLECTIONS.VEHICLES, {
+        limit: 100
+      }),
+      this.runtime.listDocs<DeviceDocument>(FIRESTORE_COLLECTIONS.DEVICES, {
+        limit: 100
+      }),
+      this.runtime.listDocs<IncidentDocument>(FIRESTORE_COLLECTIONS.INCIDENTS, {
+        orderBy: [{ field: 'occurredAt', direction: 'desc' }],
+        limit: 100
+      }),
+      this.runtime.listDocs<NotificationDocument>(
+        FIRESTORE_COLLECTIONS.NOTIFICATIONS,
+        {
+          orderBy: [{ field: 'createdAt', direction: 'desc' }],
+          limit: 100
+        }
+      ),
+      this.runtime.listDocs<AuditLogDocument>(
+        FIRESTORE_COLLECTIONS.AUDIT_LOGS,
+        {
+          orderBy: [{ field: 'sequenceIndex', direction: 'asc' }],
+          limit: 200
+        }
+      ),
+      this.audit.verifyChain(),
+      this.runtime.listDocs<SystemConfigurationDocument>(
+        FIRESTORE_COLLECTIONS.SYSTEM_CONFIGURATION
+      )
+    ]);
+
+    const overview = {
+      totalUsers: users.length,
+      totalVehicles: vehicles.length,
+      activeDevices: devices.filter((d) => d.status === 'ACTIVE').length,
+      inactiveOrProvisionedDevices: devices.filter(
+        (d) => d.status !== 'ACTIVE'
+      ).length,
+      registeredCompanies: companies.length,
+      registeredShowrooms: showrooms.length,
+      verifiedAuthorities: authorities.filter(
+        (a) => a.verificationStatus === 'VERIFIED'
+      ).length,
+      totalIncidents: incidents.length
+    };
+
+    return {
+      overview,
+      users,
+      userRoles,
+      companies,
+      showrooms,
+      authorities,
+      vehicles,
+      devices,
+      incidents,
+      notifications,
+      auditLogs,
+      auditVerification,
+      systemConfigurations
+    };
+  }
+
+  /**
+   * Public Website contact & institutional onboarding inquiry endpoint (no auth required).
+   */
+  async submitPublicContactInquiry(rawInput: unknown): Promise<{
+    ticketId: string;
+    status: string;
+    submittedAt: string;
+  }> {
+    const parsed = publicContactInquiryPayloadSchema.parse(rawInput);
+    const nowIso = this.runtime.now().toISOString();
+    const ticketId = `inq_${randomUUID().slice(0, 12)}`;
+
+    const ticketDoc: SupportTicketDocument = {
+      id: ticketId,
+      createdByUserId: 'PUBLIC_WEBSITE',
+      vehicleId: null,
+      companyId: null,
+      showroomId: null,
+      category: 'GENERAL_INQUIRY',
+      subject: `[${parsed.inquiryType}] ${parsed.fullName}${parsed.organisation ? ` (${parsed.organisation})` : ''}`,
+      description: `Email: ${parsed.email}\nInquiry Type: ${parsed.inquiryType}\nOrganisation: ${parsed.organisation || 'N/A'}\n\n${parsed.message}`,
+      status: 'OPEN',
+      assignedSupportUserId: null,
+      messages: [
+        {
+          senderUserId: 'PUBLIC_WEBSITE',
+          senderRole: 'VEHICLE_OWNER',
+          body: parsed.message,
+          createdAt: nowIso
+        }
+      ],
+      createdAt: nowIso,
+      updatedAt: nowIso
+    };
+
+    await this.runtime.setDoc(
+      FIRESTORE_COLLECTIONS.SUPPORT_TICKETS,
+      ticketId,
+      ticketDoc
+    );
+
+    await this.audit.appendAuditLog({
+      actorUserId: 'PUBLIC_WEBSITE',
+      actorRole: 'SYSTEM',
+      action: 'PUBLIC_CONTACT_INQUIRY_SUBMITTED',
+      severity: 'INFO',
+      targetCollection: FIRESTORE_COLLECTIONS.SUPPORT_TICKETS,
+      targetDocumentId: ticketId,
+      metadata: {
+        inquiryType: parsed.inquiryType,
+        organisation: parsed.organisation || null,
+        email: parsed.email
+      }
+    });
+
+    return {
+      ticketId,
+      status: ticketDoc.status,
+      submittedAt: nowIso
+    };
+  }
 }
+
 

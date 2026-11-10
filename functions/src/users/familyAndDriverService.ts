@@ -594,6 +594,73 @@ export class FamilyAndDriverService {
     const roleId = `${driverUid}_DRIVER_${params.vehicleId}`;
     const nowIso = this.runtime.now().toISOString();
 
+    const existingDriverUser = await this.runtime.getDoc<UserDocument>(
+      FIRESTORE_COLLECTIONS.USERS,
+      driverUid
+    );
+    if (!existingDriverUser) {
+      await this.runtime.setDoc<UserDocument>(
+        FIRESTORE_COLLECTIONS.USERS,
+        driverUid,
+        {
+          uid: driverUid,
+          phoneE164: cleanPhone,
+          status: 'PENDING_VERIFICATION',
+          primaryRole: 'DRIVER',
+          sessionVersion: 1,
+          mfaEnrolled: false,
+          createdAt: nowIso,
+          updatedAt: nowIso
+        }
+      );
+      await this.runtime.setDoc<UserProfileDocument>(
+        FIRESTORE_COLLECTIONS.USER_PROFILES,
+        driverUid,
+        {
+          uid: driverUid,
+          fullName: params.driverFullName.trim(),
+          language: 'en',
+          notificationPreferences: {
+            pushEnabled: true,
+            criticalAlertsOnly: false
+          },
+          privacySettings: {
+            shareWithMedicalOnSos: true,
+            shareWithPoliceOnSos: true
+          },
+          updatedAt: nowIso
+        }
+      );
+      const phoneLockKey = UNIQUE_LOCK_KEYS.phone(cleanPhone);
+      const existingPhoneLock = await this.runtime.getDoc<UniqueLockDocument>(
+        FIRESTORE_COLLECTIONS.UNIQUE_LOCKS,
+        phoneLockKey
+      );
+      if (!existingPhoneLock) {
+        await this.runtime.setDoc<UniqueLockDocument>(
+          FIRESTORE_COLLECTIONS.UNIQUE_LOCKS,
+          phoneLockKey,
+          {
+            lockKey: phoneLockKey,
+            entityCollection: FIRESTORE_COLLECTIONS.USERS,
+            entityId: driverUid,
+            createdAt: nowIso
+          }
+        );
+      }
+    } else if (params.action === 'REVOKE') {
+      await this.runtime.setDoc<UserDocument>(
+        FIRESTORE_COLLECTIONS.USERS,
+        driverUid,
+        {
+          ...existingDriverUser,
+          sessionVersion: existingDriverUser.sessionVersion + 1,
+          updatedAt: nowIso
+        }
+      );
+      await this.runtime.auth.revokeRefreshTokens(driverUid);
+    }
+
     const doc: VehicleDriverDocument = {
       id: assignmentId,
       vehicleId: params.vehicleId,

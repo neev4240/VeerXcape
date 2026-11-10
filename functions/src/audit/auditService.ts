@@ -111,7 +111,9 @@ export class AuditService {
   async verifyChain(): Promise<{
     valid: boolean;
     totalEntries: number;
+    checkedCount: number;
     brokenAtSequenceIndex: number | null;
+    brokenAtLogId: string | null;
     reason: string | null;
   }> {
     const entries = await this.runtime.listDocs<AuditLogDocument>(
@@ -121,10 +123,16 @@ export class AuditService {
       }
     );
     const result = verifyAuditChainIntegrity(entries, GENESIS_AUDIT_HASH);
+    const brokenEntry =
+      result.brokenAtSequenceIndex !== null
+        ? entries.find((e) => e.sequenceIndex === result.brokenAtSequenceIndex)
+        : undefined;
     return {
       valid: result.valid,
       totalEntries: entries.length,
+      checkedCount: entries.length,
       brokenAtSequenceIndex: result.brokenAtSequenceIndex,
+      brokenAtLogId: brokenEntry?.id ?? null,
       reason: result.reason
     };
   }

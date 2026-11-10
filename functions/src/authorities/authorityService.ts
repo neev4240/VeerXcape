@@ -350,5 +350,81 @@ export class AuthorityService {
       updateRecord: updateDoc
     };
   }
+
+  /**
+   * Returns the authenticated officer's verified AuthorityDocument(s) and recent IncidentUpdateDocument[] logs.
+   */
+  async getAuthorityWorkspace(params: {
+    actorUser: UserDocument;
+    activeRoles: UserRoleDocument[];
+  }): Promise<{
+    authorities: AuthorityDocument[];
+    recentUpdates: IncidentUpdateDocument[];
+  }> {
+    const authRoles = params.activeRoles.filter(
+      (r) =>
+        r.userId === params.actorUser.uid &&
+        r.status === 'ACTIVE' &&
+        (r.role === 'AUTHORITY_MEDICAL' ||
+          r.role === 'AUTHORITY_POLICE' ||
+          r.role === 'AUTHORITY_ROAD')
+    );
+
+    if (authRoles.length === 0) {
+      throw new AppError(
+        403,
+        'FORBIDDEN',
+        'Active AUTHORITY_MEDICAL, AUTHORITY_POLICE, or AUTHORITY_ROAD role is required.'
+      );
+    }
+
+    const authorityIds = Array.from(
+      new Set(
+        authRoles
+          .map((r) => r.authorityId || r.scopeId)
+          .filter((id): id is string => Boolean(id))
+      )
+    );
+
+    const authorities: AuthorityDocument[] = [];
+    for (const id of authorityIds) {
+      const doc = await this.runtime.getDoc<AuthorityDocument>(
+        FIRESTORE_COLLECTIONS.AUTHORITIES,
+        id
+      );
+      if (doc && doc.verificationStatus === 'VERIFIED') {
+        authorities.push(doc);
+      }
+    }
+
+    if (authorities.length === 0) {
+      throw new AppError(
+        403,
+        'FORBIDDEN',
+        'Assigned authority organisation is not verified or is currently suspended.'
+      );
+    }
+
+    const allowedDepts = new Set(authorities.map((a) => a.department));
+    const allUpdates = await this.runtime.listDocs<IncidentUpdateDocument>(
+      FIRESTORE_COLLECTIONS.INCIDENT_UPDATES,
+      {
+        orderBy: [{ field: 'createdAt', direction: 'desc' }],
+        limit: 50
+      }
+    );
+
+    const recentUpdates = allUpdates.filter(
+      (u) =>
+        u.actorUserId === params.actorUser.uid ||
+        (u.authorityDepartment && allowedDepts.has(u.authorityDepartment))
+    );
+
+    return {
+      authorities,
+      recentUpdates
+    };
+  }
 }
+
 

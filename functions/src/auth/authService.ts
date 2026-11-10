@@ -223,6 +223,40 @@ export class AuthService {
     return verifiedDoc;
   }
 
+  private async resolveUidByPhoneE164(phoneE164: string): Promise<string | null> {
+    const lockKey = UNIQUE_LOCK_KEYS.phone(phoneE164);
+    const phoneLock = await this.runtime.getDoc<UniqueLockDocument>(
+      FIRESTORE_COLLECTIONS.UNIQUE_LOCKS,
+      lockKey
+    );
+    if (phoneLock) {
+      return phoneLock.entityId;
+    }
+
+    const matchingUsers = await this.runtime.listDocs<UserDocument>(
+      FIRESTORE_COLLECTIONS.USERS,
+      {
+        where: [{ field: 'phoneE164', op: '==', value: phoneE164 }],
+        limit: 1
+      }
+    );
+    if (matchingUsers.length === 0) {
+      return null;
+    }
+    const foundUser = matchingUsers[0];
+    await this.runtime.setDoc<UniqueLockDocument>(
+      FIRESTORE_COLLECTIONS.UNIQUE_LOCKS,
+      lockKey,
+      {
+        lockKey,
+        entityCollection: FIRESTORE_COLLECTIONS.USERS,
+        entityId: foundUser.uid,
+        createdAt: this.runtime.now().toISOString()
+      }
+    );
+    return foundUser.uid;
+  }
+
   /**
    * Activates a showroom-provisioned customer account after OTP verification
    * and sets their permanent scrypt-hashed password.
@@ -239,13 +273,9 @@ export class AuthService {
       otpCode: parsed.otpCode
     });
 
-    const lockKey = UNIQUE_LOCK_KEYS.phone(parsed.phoneE164);
-    const phoneLock = await this.runtime.getDoc<UniqueLockDocument>(
-      FIRESTORE_COLLECTIONS.UNIQUE_LOCKS,
-      lockKey
-    );
+    const uid = await this.resolveUidByPhoneE164(parsed.phoneE164);
 
-    if (!phoneLock) {
+    if (!uid) {
       throw new AppError(
         404,
         'NOT_FOUND',
@@ -253,7 +283,6 @@ export class AuthService {
       );
     }
 
-    const uid = phoneLock.entityId;
     const nowIso = this.runtime.now().toISOString();
     const { saltHex, hashHex } = hashSecretWithScrypt(parsed.newPassword);
 
@@ -372,17 +401,12 @@ export class AuthService {
     activeRoles: UserRoleDocument[];
   }> {
     const parsed = customerPhoneLoginSchema.parse(rawInput);
-    const lockKey = UNIQUE_LOCK_KEYS.phone(parsed.phoneE164);
-    const phoneLock = await this.runtime.getDoc<UniqueLockDocument>(
-      FIRESTORE_COLLECTIONS.UNIQUE_LOCKS,
-      lockKey
-    );
+    const uid = await this.resolveUidByPhoneE164(parsed.phoneE164);
 
-    if (!phoneLock) {
+    if (!uid) {
       throw new AppError(401, 'UNAUTHORIZED', 'Invalid phone number or password.');
     }
 
-    const uid = phoneLock.entityId;
     const userDoc = await this.runtime.getDoc<UserDocument>(
       FIRESTORE_COLLECTIONS.USERS,
       uid
@@ -536,15 +560,11 @@ export class AuthService {
       otpCode: rawInput.otpCode
     });
 
-    const phoneLock = await this.runtime.getDoc<UniqueLockDocument>(
-      FIRESTORE_COLLECTIONS.UNIQUE_LOCKS,
-      UNIQUE_LOCK_KEYS.phone(cleanPhone)
-    );
-    if (!phoneLock) {
+    const uid = await this.resolveUidByPhoneE164(cleanPhone);
+    if (!uid) {
       throw new AppError(404, 'NOT_FOUND', 'Account not found.');
     }
 
-    const uid = phoneLock.entityId;
     const nowIso = this.runtime.now().toISOString();
     const { saltHex, hashHex } = hashSecretWithScrypt(cleanPassword);
 
@@ -641,5 +661,55 @@ export class AuthService {
       activeRoles
     };
   }
+
+  /**
+   * Returns the authenticated user's live identity, profile, and active roles.
+   */
+  async getSessionIdentity(authorizationHeader?: string): Promise<{
+    user: UserDocument;
+    profile: UserProfileDocument | null;
+    activeRoles: UserRoleDocument[];
+  }> {
+    const ctx = await this.authenticateBearerToken(authorizationHeader);
+    const profile = await this.runtime.getDoc<UserProfileDocument>(
+      FIRESTORE_COLLECTIONS.USER_PROFILES,
+      ctx.user.uid
+    );
+    return {
+      user: ctx.user,
+      profile,
+      activeRoles: ctx.activeRoles
+    };
+  }
+
+  /**
+   * Invalidates the caller's current session by incrementing sessionVersion and revoking refresh tokens.
+   */
+  async logoutSession(authorizationHeader?: string): Promise<{ loggedOut: true }> {
+    const ctx = await this.authenticateBearerToken(authorizationHeader);
+    const nowIso = this.runtime.now().toISOString();
+    const updatedUser: UserDocument = {
+      ...ctx.user,
+      sessionVersion: ctx.user.sessionVersion + 1,
+      updatedAt: nowIso
+    };
+    await this.runtime.setDoc(
+      FIRESTORE_COLLECTIONS.USERS,
+      ctx.user.uid,
+      updatedUser
+    );
+    await this.runtime.auth.revokeRefreshTokens(ctx.user.uid);
+    await this.audit.appendAuditLog({
+      actorUserId: ctx.user.uid,
+      actorRole: ctx.user.primaryRole,
+      action: 'USER_LOGOUT',
+      severity: 'INFO',
+      targetCollection: FIRESTORE_COLLECTIONS.USERS,
+      targetDocumentId: ctx.user.uid,
+      metadata: { newSessionVersion: updatedUser.sessionVersion }
+    });
+    return { loggedOut: true };
+  }
 }
+
 

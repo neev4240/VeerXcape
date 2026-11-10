@@ -113,6 +113,24 @@ export function createVeerXcapeExpressApp(runtime: VeerXcapeBackendRuntime) {
     })
   );
 
+  app.get(
+    '/api/v1/auth/me',
+    asyncHandler(async (req, res) => {
+      const data = await authService.getSessionIdentity(
+        req.headers.authorization
+      );
+      res.json({ success: true, data });
+    })
+  );
+
+  app.post(
+    '/api/v1/auth/logout',
+    asyncHandler(async (req, res) => {
+      const data = await authService.logoutSession(req.headers.authorization);
+      res.json({ success: true, data });
+    })
+  );
+
   // =========================================================================
   // 2. MOBILE APP ENDPOINTS (Owner, Family, Driver, SOS)
   // =========================================================================
@@ -258,9 +276,109 @@ export function createVeerXcapeExpressApp(runtime: VeerXcapeBackendRuntime) {
     })
   );
 
+  app.post(
+    '/api/v1/mobile/emergency-contacts',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const data = await mobileService.upsertEmergencyContact({
+        actorUser: ctx.user,
+        rawInput: req.body
+      });
+      res.json({ success: true, data });
+    })
+  );
+
+  app.delete(
+    '/api/v1/mobile/emergency-contacts/:contactId',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const data = await mobileService.deleteEmergencyContact({
+        actorUser: ctx.user,
+        contactId: req.params.contactId
+      });
+      res.json({ success: true, data });
+    })
+  );
+
+  app.patch(
+    '/api/v1/mobile/profile',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const data = await mobileService.updateUserProfile({
+        actorUser: ctx.user,
+        rawInput: req.body
+      });
+      res.json({ success: true, data });
+    })
+  );
+
+  app.post(
+    '/api/v1/mobile/support-tickets',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const data = await mobileService.createSupportTicket({
+        actorUser: ctx.user,
+        rawInput: req.body
+      });
+      res.json({ success: true, data });
+    })
+  );
+
   // =========================================================================
   // 3. SHOWROOM & PARENT-COMPANY ENDPOINTS
   // =========================================================================
+  app.get(
+    '/api/v1/dealer/workspace',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const data = await dealerService.getDealerWorkspace({
+        actorUser: ctx.user,
+        activeRoles: ctx.activeRoles
+      });
+      res.json({ success: true, data });
+    })
+  );
+
+  app.post(
+    '/api/v1/dealer/customers/verify-otp',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const data = await dealerService.verifyCustomerOtpForShowroom({
+        actorUser: ctx.user,
+        activeRoles: ctx.activeRoles,
+        rawInput: req.body
+      });
+      res.json({ success: true, data });
+    })
+  );
+
+  app.patch(
+    '/api/v1/dealer/vehicles/:vehicleId/correction',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const data = await dealerService.applyPermittedVehicleCorrection({
+        actorUser: ctx.user,
+        activeRoles: ctx.activeRoles,
+        vehicleId: req.params.vehicleId,
+        rawInput: req.body
+      });
+      res.json({ success: true, data });
+    })
+  );
   app.post(
     '/api/v1/dealer/vehicles/register',
     asyncHandler(async (req, res) => {
@@ -336,6 +454,20 @@ export function createVeerXcapeExpressApp(runtime: VeerXcapeBackendRuntime) {
   // 4. GOVERNMENT AUTHORITY ENDPOINTS
   // =========================================================================
   app.get(
+    '/api/v1/authority/workspace',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const data = await authorityService.getAuthorityWorkspace({
+        actorUser: ctx.user,
+        activeRoles: ctx.activeRoles
+      });
+      res.json({ success: true, data });
+    })
+  );
+
+  app.get(
     '/api/v1/authority/:authorityId/incidents',
     asyncHandler(async (req, res) => {
       const ctx = await authService.authenticateBearerToken(
@@ -394,6 +526,20 @@ export function createVeerXcapeExpressApp(runtime: VeerXcapeBackendRuntime) {
   // 5. VEERXCAPE ADMIN & SUPER-ADMIN ENDPOINTS
   // =========================================================================
   app.get(
+    '/api/v1/admin/workspace',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const data = await adminService.getAdminWorkspace({
+        actorUser: ctx.user,
+        activeRoles: ctx.activeRoles
+      });
+      res.json({ success: true, data });
+    })
+  );
+
+  app.get(
     '/api/v1/admin/overview',
     asyncHandler(async (req, res) => {
       const ctx = await authService.authenticateBearerToken(
@@ -448,6 +594,30 @@ export function createVeerXcapeExpressApp(runtime: VeerXcapeBackendRuntime) {
         activeRoles: ctx.activeRoles,
         ...req.body
       });
+      res.json({ success: true, data });
+    })
+  );
+
+  app.patch(
+    '/api/v1/admin/authorities/:authorityId/verify',
+    asyncHandler(async (req, res) => {
+      const ctx = await authService.authenticateBearerToken(
+        req.headers.authorization
+      );
+      const data = await adminService.updateAuthorityVerificationStatus({
+        actorUser: ctx.user,
+        activeRoles: ctx.activeRoles,
+        authorityId: req.params.authorityId,
+        rawInput: req.body
+      });
+      res.json({ success: true, data });
+    })
+  );
+
+  app.post(
+    '/api/v1/public/contact',
+    asyncHandler(async (req, res) => {
+      const data = await adminService.submitPublicContactInquiry(req.body);
       res.json({ success: true, data });
     })
   );

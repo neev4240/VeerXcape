@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Activity,
   Award,
@@ -20,6 +20,8 @@ import {
   Wrench
 } from 'lucide-react';
 import { VERCEL_PROJECTS } from '@veerxcape/shared-constants';
+import { VeerXcapeApiClient } from '@veerxcape/shared-services';
+import { publicContactInquiryPayloadSchema } from '@veerxcape/shared-validation';
 
 type PublicPageId =
   | 'HOME'
@@ -81,11 +83,50 @@ export default function App() {
   const [contactType, setContactType] = useState<'SHOWROOM' | 'AUTHORITY' | 'CUSTOMER'>('SHOWROOM');
   const [contactMessage, setContactMessage] = useState('');
   const [contactSubmitted, setContactSubmitted] = useState(false);
+  const [contactInquiryId, setContactInquiryId] = useState<string | null>(null);
+  const [contactLoading, setContactLoading] = useState(false);
+  const [contactError, setContactError] = useState<string | null>(null);
 
-  const handleContactSubmit = (e: React.FormEvent) => {
+  const apiClient = useMemo(() => new VeerXcapeApiClient(), []);
+
+  const handleContactSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!contactName.trim() || !contactEmail.trim() || !contactMessage.trim()) return;
-    setContactSubmitted(true);
+    setContactError(null);
+    const parsed = publicContactInquiryPayloadSchema.safeParse({
+      fullName: contactName.trim(),
+      organisation: contactOrg.trim() || undefined,
+      email: contactEmail.trim(),
+      inquiryType: contactType,
+      message: contactMessage.trim()
+    });
+    if (!parsed.success) {
+      setContactError(
+        parsed.error.issues[0]?.message ??
+          'Please provide your name, a valid email address, and a detailed message (at least 10 characters).'
+      );
+      return;
+    }
+
+    setContactLoading(true);
+    try {
+      const res = await apiClient.submitPublicContactInquiry(parsed.data);
+      if (!res.success || !res.data) {
+        setContactError(
+          `${res.error?.message ?? 'Unable to submit inquiry at this time.'} (${res.error?.code ?? 'REQUEST_FAILED'})`
+        );
+        return;
+      }
+      setContactInquiryId(res.data.ticketId);
+      setContactSubmitted(true);
+    } catch (err) {
+      setContactError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to submit inquiry at this time. Please check your connection and try again.'
+      );
+    } finally {
+      setContactLoading(false);
+    }
   };
 
   return (
@@ -427,12 +468,19 @@ export default function App() {
               Contact VeerXcape Institutional & OEM Onboarding Desk
             </h2>
             {contactSubmitted ? (
-              <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 font-semibold">
-                Thank you, {contactName}. Your inquiry has been logged for our institutional
-                onboarding team.
+              <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 font-semibold space-y-1">
+                <p>
+                  Thank you, {contactName}. Your inquiry has been logged on the
+                  VeerXcape backend for our institutional onboarding team.
+                </p>
+                {contactInquiryId && (
+                  <p className="font-mono text-[11px] text-emerald-700">
+                    Reference Ticket ID: {contactInquiryId}
+                  </p>
+                )}
               </div>
             ) : (
-              <form onSubmit={handleContactSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <form onSubmit={(e) => void handleContactSubmit(e)} className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1">Full Name</label>
                   <input
@@ -485,12 +533,21 @@ export default function App() {
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg"
                   />
                 </div>
+                {contactError && (
+                  <div
+                    role="alert"
+                    className="md:col-span-2 p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 font-medium"
+                  >
+                    {contactError}
+                  </div>
+                )}
                 <div className="md:col-span-2">
                   <button
                     type="submit"
-                    className="px-5 py-2.5 rounded-lg bg-[#2563EB] text-white font-semibold"
+                    disabled={contactLoading}
+                    className="px-5 py-2.5 rounded-lg bg-[#2563EB] disabled:opacity-50 text-white font-semibold"
                   >
-                    Submit Inquiry
+                    {contactLoading ? 'Submitting to VeerXcape Backend...' : 'Submit Inquiry'}
                   </button>
                 </div>
               </form>

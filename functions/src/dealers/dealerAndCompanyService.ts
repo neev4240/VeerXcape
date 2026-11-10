@@ -6,6 +6,7 @@ import {
 } from '@veerxcape/shared-constants';
 import { evaluateShowroomOrCompanyAccess } from '@veerxcape/shared-services';
 import type {
+  AuditLogDocument,
   CompanyDocument,
   DeviceAssignmentDocument,
   DeviceDocument,
@@ -18,8 +19,13 @@ import type {
   VehicleDocument,
   VehicleOwnerDocument
 } from '@veerxcape/shared-types';
-import { showroomVehicleRegistrationSchema } from '@veerxcape/shared-validation';
+import {
+  showroomCustomerOtpVerifyPayloadSchema,
+  showroomVehicleRegistrationSchema,
+  vehiclePermittedCorrectionPayloadSchema
+} from '@veerxcape/shared-validation';
 import { AuditService } from '../audit/auditService.js';
+import { AuthService } from '../auth/authService.js';
 import { AppError } from '../shared/errors.js';
 import {
   claimUniqueLockInTx,
@@ -28,9 +34,11 @@ import {
 
 export class DealerAndCompanyService {
   private readonly audit: AuditService;
+  private readonly authService: AuthService;
 
   constructor(private readonly runtime: VeerXcapeBackendRuntime) {
     this.audit = new AuditService(runtime);
+    this.authService = new AuthService(runtime);
   }
 
   /**
@@ -538,5 +546,379 @@ export class DealerAndCompanyService {
 
     return updatedShowroom;
   }
+
+  /**
+   * Verifies a customer's 6-digit SMS OTP for showroom vehicle registration (`SHOWROOM_CUSTOMER_VERIFY`).
+   * Zero-knowledge password guarantee: Showroom staff only verify phone ownership; they never set or view the customer's password.
+   */
+  async verifyCustomerOtpForShowroom(params: {
+    actorUser: UserDocument;
+    activeRoles: UserRoleDocument[];
+    rawInput: unknown;
+  }): Promise<{
+    challengeId: string;
+    phoneE164: string;
+    verifiedAt: string | null;
+  }> {
+    const dealerRole = params.activeRoles.find(
+      (r) =>
+        r.userId === params.actorUser.uid &&
+        r.status === 'ACTIVE' &&
+        (r.role === 'SHOWROOM_STAFF' ||
+          r.role === 'SHOWROOM_MANAGER' ||
+          r.role === 'COMPANY_ADMIN')
+    );
+    if (!dealerRole) {
+      throw new AppError(
+        403,
+        'FORBIDDEN',
+        'Active showroom or company role is required to verify customer registration OTPs.'
+      );
+    }
+
+    const parsed = showroomCustomerOtpVerifyPayloadSchema.parse(params.rawInput);
+    const verifiedDoc = await this.authService.verifyOtpChallenge({
+      phoneE164: parsed.phoneE164,
+      purpose: 'SHOWROOM_CUSTOMER_VERIFY',
+      otpCode: parsed.otpCode,
+      consumeImmediately: false
+    });
+
+    return {
+      challengeId: verifiedDoc.id,
+      phoneE164: verifiedDoc.phoneE164,
+      verifiedAt: verifiedDoc.verifiedAt ?? null
+    };
+  }
+
+  /**
+   * Applies a permitted non-destructive correction (`color`, `variant`) to a showroom-registered vehicle
+   * with a mandatory audit reason.
+   */
+  async applyPermittedVehicleCorrection(params: {
+    actorUser: UserDocument;
+    activeRoles: UserRoleDocument[];
+    vehicleId: string;
+    rawInput: unknown;
+  }): Promise<VehicleDocument> {
+    const parsed = vehiclePermittedCorrectionPayloadSchema.parse(params.rawInput);
+
+    const vehicle = await this.runtime.getDoc<VehicleDocument>(
+      FIRESTORE_COLLECTIONS.VEHICLES,
+      params.vehicleId
+    );
+    if (!vehicle) {
+      throw new AppError(404, 'NOT_FOUND', 'Vehicle not found.');
+    }
+
+    const showroom = await this.runtime.getDoc<ShowroomDocument>(
+      FIRESTORE_COLLECTIONS.SHOWROOMS,
+      vehicle.registeredByShowroomId
+    );
+    const company = await this.runtime.getDoc<CompanyDocument>(
+      FIRESTORE_COLLECTIONS.COMPANIES,
+      vehicle.companyId
+    );
+
+    const accessCheck = evaluateShowroomOrCompanyAccess({
+      user: params.actorUser,
+      activeRoles: params.activeRoles,
+      company,
+      showroom,
+      requiredRoles: ['SHOWROOM_STAFF', 'SHOWROOM_MANAGER', 'COMPANY_ADMIN']
+    });
+    if (!accessCheck.allowed) {
+      throw new AppError(403, 'FORBIDDEN', accessCheck.reason);
+    }
+
+    const nowIso = this.runtime.now().toISOString();
+    const updatedVehicle: VehicleDocument = {
+      ...vehicle,
+      color: parsed.color ?? vehicle.color,
+      variant: parsed.variant ?? vehicle.variant,
+      registrationHistory: [
+        ...vehicle.registrationHistory,
+        {
+          action: 'CORRECTION_APPLIED',
+          actorUserId: params.actorUser.uid,
+          actorRole: params.actorUser.primaryRole,
+          timestamp: nowIso,
+          summary: `Permitted correction applied: ${parsed.reason}`
+        }
+      ],
+      updatedAt: nowIso
+    };
+
+    await this.runtime.setDoc(
+      FIRESTORE_COLLECTIONS.VEHICLES,
+      vehicle.id,
+      updatedVehicle
+    );
+
+    await this.audit.appendAuditLog({
+      actorUserId: params.actorUser.uid,
+      actorRole: params.actorUser.primaryRole,
+      actorTenantId: showroom?.id ?? vehicle.companyId,
+      action: 'VEHICLE_PERMITTED_CORRECTION_APPLIED',
+      severity: 'SENSITIVE',
+      targetCollection: FIRESTORE_COLLECTIONS.VEHICLES,
+      targetDocumentId: vehicle.id,
+      reason: parsed.reason,
+      metadata: {
+        previousColor: vehicle.color,
+        newColor: updatedVehicle.color,
+        previousVariant: vehicle.variant,
+        newVariant: updatedVehicle.variant
+      }
+    });
+
+    return updatedVehicle;
+  }
+
+  /**
+   * Returns a strictly tenant-isolated workspace for `COMPANY_ADMIN`, `SHOWROOM_MANAGER`, or `SHOWROOM_STAFF`.
+   */
+  async getDealerWorkspace(params: {
+    actorUser: UserDocument;
+    activeRoles: UserRoleDocument[];
+  }) {
+    const companyAdminRole = params.activeRoles.find(
+      (r) =>
+        r.userId === params.actorUser.uid &&
+        r.status === 'ACTIVE' &&
+        r.role === 'COMPANY_ADMIN'
+    );
+    const showroomRole = params.activeRoles.find(
+      (r) =>
+        r.userId === params.actorUser.uid &&
+        r.status === 'ACTIVE' &&
+        (r.role === 'SHOWROOM_MANAGER' || r.role === 'SHOWROOM_STAFF')
+    );
+
+    if (!companyAdminRole && !showroomRole) {
+      throw new AppError(
+        403,
+        'FORBIDDEN',
+        'Active COMPANY_ADMIN, SHOWROOM_MANAGER, or SHOWROOM_STAFF role is required.'
+      );
+    }
+
+    let company: CompanyDocument | null = null;
+    let showrooms: ShowroomDocument[] = [];
+    let rawVehicles: VehicleDocument[] = [];
+    let devices: DeviceDocument[] = [];
+    let deviceAssignments: DeviceAssignmentDocument[] = [];
+    let roleDocs: UserRoleDocument[] = [];
+    let auditLogs: AuditLogDocument[] = [];
+
+    if (companyAdminRole) {
+      const companyId = companyAdminRole.companyId || companyAdminRole.scopeId;
+      company = await this.runtime.getDoc<CompanyDocument>(
+        FIRESTORE_COLLECTIONS.COMPANIES,
+        companyId
+      );
+      const accessCheck = evaluateShowroomOrCompanyAccess({
+        user: params.actorUser,
+        activeRoles: params.activeRoles,
+        company,
+        requiredRoles: ['COMPANY_ADMIN']
+      });
+      if (!accessCheck.allowed || !company) {
+        throw new AppError(403, 'FORBIDDEN', accessCheck.reason);
+      }
+
+      [showrooms, rawVehicles, devices, deviceAssignments, roleDocs, auditLogs] =
+        await Promise.all([
+          this.runtime.listDocs<ShowroomDocument>(
+            FIRESTORE_COLLECTIONS.SHOWROOMS,
+            {
+              where: [{ field: 'companyId', op: '==', value: company.id }],
+              orderBy: [{ field: 'createdAt', direction: 'desc' }]
+            }
+          ),
+          this.runtime.listDocs<VehicleDocument>(
+            FIRESTORE_COLLECTIONS.VEHICLES,
+            {
+              where: [{ field: 'companyId', op: '==', value: company.id }],
+              orderBy: [{ field: 'createdAt', direction: 'desc' }],
+              limit: 100
+            }
+          ),
+          this.runtime.listDocs<DeviceDocument>(FIRESTORE_COLLECTIONS.DEVICES, {
+            where: [{ field: 'allocatedCompanyId', op: '==', value: company.id }]
+          }),
+          this.runtime.listDocs<DeviceAssignmentDocument>(
+            FIRESTORE_COLLECTIONS.DEVICE_ASSIGNMENTS,
+            {
+              where: [{ field: 'companyId', op: '==', value: company.id }]
+            }
+          ),
+          this.runtime.listDocs<UserRoleDocument>(
+            FIRESTORE_COLLECTIONS.USER_ROLES,
+            {
+              where: [{ field: 'companyId', op: '==', value: company.id }]
+            }
+          ),
+          this.runtime.listDocs<AuditLogDocument>(
+            FIRESTORE_COLLECTIONS.AUDIT_LOGS,
+            {
+              orderBy: [{ field: 'sequenceIndex', direction: 'desc' }],
+              limit: 50
+            }
+          )
+        ]);
+      const showroomIdSet = new Set(showrooms.map((s) => s.id));
+      auditLogs = auditLogs.filter(
+        (l) =>
+          l.actorTenantId === company?.id ||
+          (l.actorTenantId && showroomIdSet.has(l.actorTenantId)) ||
+          l.metadata?.companyId === company?.id
+      );
+    } else if (showroomRole) {
+      const showroomId = showroomRole.showroomId || showroomRole.scopeId;
+      const showroom = await this.runtime.getDoc<ShowroomDocument>(
+        FIRESTORE_COLLECTIONS.SHOWROOMS,
+        showroomId
+      );
+      if (!showroom) {
+        throw new AppError(404, 'NOT_FOUND', 'Assigned showroom not found.');
+      }
+      company = await this.runtime.getDoc<CompanyDocument>(
+        FIRESTORE_COLLECTIONS.COMPANIES,
+        showroom.companyId
+      );
+      const accessCheck = evaluateShowroomOrCompanyAccess({
+        user: params.actorUser,
+        activeRoles: params.activeRoles,
+        company,
+        showroom,
+        requiredRoles: ['SHOWROOM_STAFF', 'SHOWROOM_MANAGER']
+      });
+      if (!accessCheck.allowed || !company) {
+        throw new AppError(403, 'FORBIDDEN', accessCheck.reason);
+      }
+
+      showrooms = [showroom];
+      [rawVehicles, devices, deviceAssignments, roleDocs, auditLogs] =
+        await Promise.all([
+          this.runtime.listDocs<VehicleDocument>(
+            FIRESTORE_COLLECTIONS.VEHICLES,
+            {
+              where: [
+                { field: 'registeredByShowroomId', op: '==', value: showroom.id }
+              ],
+              orderBy: [{ field: 'createdAt', direction: 'desc' }],
+              limit: 100
+            }
+          ),
+          this.runtime.listDocs<DeviceDocument>(FIRESTORE_COLLECTIONS.DEVICES, {
+            where: [
+              { field: 'allocatedShowroomId', op: '==', value: showroom.id }
+            ]
+          }),
+          this.runtime.listDocs<DeviceAssignmentDocument>(
+            FIRESTORE_COLLECTIONS.DEVICE_ASSIGNMENTS,
+            {
+              where: [{ field: 'showroomId', op: '==', value: showroom.id }]
+            }
+          ),
+          this.runtime.listDocs<UserRoleDocument>(
+            FIRESTORE_COLLECTIONS.USER_ROLES,
+            {
+              where: [{ field: 'showroomId', op: '==', value: showroom.id }]
+            }
+          ),
+          this.runtime.listDocs<AuditLogDocument>(
+            FIRESTORE_COLLECTIONS.AUDIT_LOGS,
+            {
+              orderBy: [{ field: 'sequenceIndex', direction: 'desc' }],
+              limit: 50
+            }
+          )
+        ]);
+      auditLogs = auditLogs.filter(
+        (l) =>
+          l.actorTenantId === showroom.id ||
+          l.metadata?.showroomId === showroom.id
+      );
+    }
+
+    const showroomMap = new Map(showrooms.map((s) => [s.id, s]));
+    const deviceMap = new Map(devices.map((d) => [d.id, d]));
+
+    const vehicles = await Promise.all(
+      rawVehicles.map(async (v) => {
+        const [ownerUser, ownerProfile] = await Promise.all([
+          this.runtime.getDoc<UserDocument>(
+            FIRESTORE_COLLECTIONS.USERS,
+            v.primaryOwnerId
+          ),
+          this.runtime.getDoc<UserProfileDocument>(
+            FIRESTORE_COLLECTIONS.USER_PROFILES,
+            v.primaryOwnerId
+          )
+        ]);
+        const shw = showroomMap.get(v.registeredByShowroomId);
+        const dev = v.assignedDeviceId
+          ? deviceMap.get(v.assignedDeviceId)
+          : undefined;
+        return {
+          ...v,
+          dealerCode: shw?.dealerCode ?? v.registeredByShowroomId,
+          customerFullName: ownerProfile?.fullName ?? v.primaryOwnerId,
+          customerPhoneE164: ownerUser?.phoneE164 ?? '',
+          customerEmail: ownerUser?.email ?? null,
+          assignedDeviceSerial: dev?.serialNumber ?? v.assignedDeviceId ?? null
+        };
+      })
+    );
+
+    const staff = await Promise.all(
+      roleDocs
+        .filter(
+          (r) =>
+            r.role === 'COMPANY_ADMIN' ||
+            r.role === 'SHOWROOM_MANAGER' ||
+            r.role === 'SHOWROOM_STAFF'
+        )
+        .map(async (r) => {
+          const [u, p] = await Promise.all([
+            this.runtime.getDoc<UserDocument>(
+              FIRESTORE_COLLECTIONS.USERS,
+              r.userId
+            ),
+            this.runtime.getDoc<UserProfileDocument>(
+              FIRESTORE_COLLECTIONS.USER_PROFILES,
+              r.userId
+            )
+          ]);
+          return {
+            id: r.id,
+            userId: r.userId,
+            fullName: p?.fullName ?? r.userId,
+            phoneE164: u?.phoneE164 ?? '',
+            email: u?.email ?? null,
+            role: r.role as
+              | 'COMPANY_ADMIN'
+              | 'SHOWROOM_MANAGER'
+              | 'SHOWROOM_STAFF',
+            showroomId: r.showroomId ?? null,
+            companyId: r.companyId ?? null,
+            status: r.status
+          };
+        })
+    );
+
+    return {
+      company,
+      showrooms,
+      vehicles,
+      devices,
+      deviceAssignments,
+      staff,
+      auditLogs
+    };
+  }
 }
+
 

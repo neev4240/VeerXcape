@@ -1,13 +1,14 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
-  AlertTriangle,
+  AlertOctagon,
   BatteryCharging,
   Bell,
   Car,
   CheckCircle2,
   Clock,
   Cpu,
+  HeartHandshake,
   HelpCircle,
   KeyRound,
   Lock,
@@ -15,40 +16,33 @@ import {
   MapPin,
   Navigation,
   PhoneCall,
-  Plus,
-  Radio,
   RefreshCw,
   Shield,
   ShieldAlert,
-  Smartphone,
-  Thermometer,
-  Trash2,
+  ShieldCheck,
+  Signal,
+  Sparkles,
   UserCheck,
+  UserPlus,
   Users,
-  Wifi
+  WifiOff,
+  Wrench,
+  XCircle
 } from 'lucide-react';
+import type { EmergencyContactDocument } from '@veerxcape/shared-types';
 import {
-  INCIDENT_LIFECYCLE_STATES,
-  INCIDENT_TYPES,
-  LOCATION_FRESHNESS_STATES,
-  NOTIFICATION_STATUSES,
-  USER_ROLES,
-  type LocationFreshnessState,
-  type UserRoleCode
-} from '@veerxcape/shared-constants';
-import {
-  VEERXCAPE_NATIVE_APP_METADATA,
-  computeLocationFreshness,
-  resolveFirebaseWebConfig
+  VeerXcapeApiClient,
+  VeerXcapeApiError,
+  isExplicitDevDemoModeEnabled,
+  unwrapApiResponse,
+  type MobileDashboardDTO
 } from '@veerxcape/shared-services';
 import {
   customerAccountActivationSchema,
   customerPhoneLoginSchema,
   familyMemberActivationSchema,
   familyMemberInviteSchema,
-  otpCodeSchema,
-  phoneE164Schema,
-  strongPasswordSchema
+  phoneE164Schema
 } from '@veerxcape/shared-validation';
 import {
   INITIAL_DRIVERS,
@@ -57,7 +51,6 @@ import {
   INITIAL_NOTIFICATIONS,
   INITIAL_TICKETS,
   INITIAL_VEHICLES,
-  SUPPORTED_MOBILE_ROLES,
   type MobileDriverItem,
   type MobileFamilyMemberItem,
   type MobileIncidentItem,
@@ -66,1884 +59,1910 @@ import {
   type MobileVehicleRecord
 } from './data/mobileSeedData';
 
-type AuthMode =
-  | 'SPLASH_ONBOARDING'
-  | 'LOGIN'
-  | 'ACTIVATE_SHOWROOM_ACCOUNT'
-  | 'ACTIVATE_FAMILY_INVITE'
-  | 'FORGOT_PASSWORD';
-
+type MobilePersona = 'VEHICLE_OWNER' | 'FAMILY_MEMBER' | 'DRIVER';
 type MobileScreenId =
-  | 'HOME_DASHBOARD'
-  | 'MY_VEHICLES'
-  | 'VEHICLE_DETAILS'
-  | 'LIVE_TELEMETRY'
-  | 'EMERGENCY_SOS'
-  | 'INCIDENT_HISTORY'
-  | 'FAMILY_MEMBERS'
-  | 'FAMILY_PERMISSIONS'
-  | 'DRIVER_ACCESS'
-  | 'NOTIFICATIONS'
-  | 'ACCOUNT_PRIVACY'
-  | 'HELP_SUPPORT';
+  | 'AUTH_ONBOARDING'
+  | 'DASHBOARD_HOME'
+  | 'VEHICLE_DETAILS_STATUS'
+  | 'LIVE_LOCATION_FRESHNESS'
+  | 'INCIDENT_HISTORY_TIMELINE'
+  | 'FAMILY_MEMBERS_PERMISSIONS'
+  | 'DRIVER_ASSIGNMENT_ACCESS'
+  | 'EMERGENCY_CONTACTS'
+  | 'MANUAL_SOS_SIMULATION'
+  | 'NOTIFICATIONS_CENTER'
+  | 'PROFILE_PRIVACY_SETTINGS'
+  | 'SUPPORT_HELP_TICKETS';
 
-function getFreshnessBadgeStyle(state: LocationFreshnessState): {
-  bg: string;
-  text: string;
-  border: string;
-  dot: string;
+const DEV_DEMO_ENABLED = isExplicitDevDemoModeEnabled();
+
+function mapDashboardDtoToState(
+  dto: MobileDashboardDTO,
+  currentUser: { uid: string; fullName: string; phoneE164: string }
+): {
+  persona: MobilePersona;
+  vehicles: MobileVehicleRecord[];
+  familyMembers: MobileFamilyMemberItem[];
+  drivers: MobileDriverItem[];
+  emergencyContacts: EmergencyContactDocument[];
+  incidents: MobileIncidentItem[];
+  notifications: MobileNotificationItem[];
+  supportTickets: MobileSupportTicketItem[];
 } {
-  switch (state) {
-    case LOCATION_FRESHNESS_STATES.LIVE:
-      return {
-        bg: 'bg-emerald-50',
-        text: 'text-emerald-800',
-        border: 'border-emerald-200',
-        dot: 'bg-emerald-500 animate-pulse'
-      };
-    case LOCATION_FRESHNESS_STATES.RECENT:
-      return {
-        bg: 'bg-blue-50',
-        text: 'text-blue-800',
-        border: 'border-blue-200',
-        dot: 'bg-blue-500'
-      };
-    case LOCATION_FRESHNESS_STATES.STALE:
-      return {
-        bg: 'bg-amber-50',
-        text: 'text-amber-800',
-        border: 'border-amber-200',
-        dot: 'bg-amber-500'
-      };
-    case LOCATION_FRESHNESS_STATES.OFFLINE:
-    default:
-      return {
-        bg: 'bg-slate-100',
-        text: 'text-slate-700',
-        border: 'border-slate-300',
-        dot: 'bg-slate-400'
-      };
-  }
+  const hasOwner = dto.vehicles.some((v) => v.accessRole === 'VEHICLE_OWNER');
+  const hasFamily =
+    dto.vehicles.some((v) => v.accessRole === 'FAMILY_MEMBER') ||
+    (dto.myFamilyMemberships?.length ?? 0) > 0;
+  const persona: MobilePersona = hasOwner
+    ? 'VEHICLE_OWNER'
+    : hasFamily
+      ? 'FAMILY_MEMBER'
+      : 'DRIVER';
+
+  const vehicles: MobileVehicleRecord[] = dto.vehicles.map((v) => ({
+    id: v.id,
+    registrationNumber: v.registrationNumber,
+    vin: v.vin ?? `VX-${v.id.toUpperCase()}`,
+    manufacturer: v.manufacturer,
+    model: v.model,
+    variant: v.variant,
+    manufacturingYear: v.manufacturingYear ?? new Date().getFullYear(),
+    color: v.color,
+    fuelType: v.fuelType,
+    ownerUserId: currentUser.uid,
+    ownerName: currentUser.fullName,
+    ownerPhoneE164: currentUser.phoneE164,
+    registeredByShowroomName:
+      v.registeredByShowroomName ?? 'Authorized VeerXcape Showroom',
+    registeredByDealerCode: v.registeredByDealerCode ?? 'DLR-VERIFIED',
+    assignedDeviceSerial:
+      v.assignedDeviceSerial ?? v.assignedDeviceId ?? 'UNASSIGNED',
+    firmwareVersion: v.firmwareVersion ?? 'v2.4.1-stm32u5',
+    jurisdictionCode: 'IN-UP-LKO',
+    roadSegmentSummary: v.liveStatusSummary.lastLocation
+      ? `Lat ${v.liveStatusSummary.lastLocation.lat.toFixed(4)}, Lng ${v.liveStatusSummary.lastLocation.lng.toFixed(4)}`
+      : 'Awaiting live GNSS coordinates',
+    lat: v.liveStatusSummary.lastLocation?.lat ?? 26.8467,
+    lng: v.liveStatusSummary.lastLocation?.lng ?? 80.9462,
+    speedKmh: v.liveStatusSummary.lastLocation?.speedKmh ?? 0,
+    lastLocationUpdateSecondsAgo: v.locationFreshness.locationAgeSeconds ?? 0,
+    lastHeartbeatSecondsAgo: v.locationFreshness.heartbeatAgeSeconds ?? 0,
+    ignitionOn: (v.liveStatusSummary.lastLocation?.speedKmh ?? 0) > 0,
+    doorsLocked: true,
+    windowsClosed: true,
+    cabinTempCelsius: 24.0,
+    occupantDetected: true,
+    smokeDetected: false,
+    coPpm: 2,
+    peakImpactG: 1.0,
+    mainVoltageMv: v.liveStatusSummary.batteryVoltageMv ?? 12800,
+    backupBatteryPercent: v.liveStatusSummary.backupBatteryPercent ?? 96,
+    powerSource: v.liveStatusSummary.powerSource ?? 'VEHICLE_12V',
+    cellularRssiDbm: -68,
+    gnssFixStatus: v.liveStatusSummary.lastLocation ? 'FIX_3D' : 'NO_FIX'
+  }));
+
+  const allMemberships = [
+    ...dto.familyMembershipsForOwnedVehicles,
+    ...(dto.myFamilyMemberships ?? []).filter(
+      (m) => !dto.familyMembershipsForOwnedVehicles.some((e) => e.id === m.id)
+    )
+  ];
+  const familyMembers: MobileFamilyMemberItem[] = allMemberships.map((m) => ({
+    id: m.id,
+    vehicleId: m.vehicleId,
+    fullName: m.familyMemberName,
+    phoneE164: m.familyMemberPhoneE164,
+    relationship: m.relationship,
+    status:
+      m.status === 'ACTIVE'
+        ? 'ACTIVE'
+        : m.status === 'REVOKED'
+          ? 'REVOKED'
+          : 'PENDING_OTP_AND_PASSWORD_CHANGE',
+    permissions: m.permissions,
+    invitedAt: m.createdAt.slice(0, 16).replace('T', ' ')
+  }));
+
+  const drivers: MobileDriverItem[] = (dto.drivers ?? []).map((d) => ({
+    id: d.id,
+    vehicleId: d.vehicleId,
+    fullName: d.driverFullName ?? d.driverUserId,
+    phoneE164: d.driverPhoneE164 ?? '+910000000000',
+    licenseNumber: 'VERIFIED-DRIVER',
+    status: d.status,
+    assignedShift: `Since ${d.validFrom.slice(0, 10)}`
+  }));
+
+  const incidents: MobileIncidentItem[] = dto.incidents.map((inc) => ({
+    id: inc.id,
+    vehicleId: inc.vehicleId,
+    registrationNumber: inc.vehicleSnapshot.registrationNumber,
+    incidentType: inc.incidentType,
+    source:
+      inc.source === 'HARDWARE_STM32'
+        ? 'STM32U575_HARDWARE'
+        : 'MANUAL_USER_SOS',
+    severity: inc.severity,
+    lifecycleState: inc.lifecycleState,
+    jurisdictionCode: inc.location.jurisdictionCode,
+    roadSegmentSummary: inc.location.roadSegmentSummary,
+    lat: inc.location.lat,
+    lng: inc.location.lng,
+    occurredAt: inc.occurredAt.slice(0, 19).replace('T', ' '),
+    description: `${inc.incidentType} (${inc.severity}) — ${inc.location.roadSegmentSummary}`,
+    assignedAuthorityDept: inc.authorizedDepartments,
+    dispatchReferenceCode: inc.dispatchReferenceCode ?? undefined,
+    assignedOfficerName: inc.assignedOfficerName ?? undefined
+  }));
+
+  const notifications: MobileNotificationItem[] = (
+    dto.notifications ?? []
+  ).map((n) => ({
+    id: n.id,
+    title: n.title,
+    body: n.body,
+    category: n.incidentId ? 'EMERGENCY' : 'SYSTEM',
+    status: n.status,
+    createdAt: n.createdAt.slice(0, 19).replace('T', ' '),
+    deliveredAt: n.deliveredAckAt ?? undefined,
+    readAt: n.readAt ?? undefined
+  }));
+
+  const supportTickets: MobileSupportTicketItem[] = (
+    dto.supportTickets ?? []
+  ).map((t) => ({
+    id: t.id,
+    vehicleId: t.vehicleId ?? '',
+    category:
+      t.category === 'REGISTRATION_CORRECTION'
+        ? 'SHOWROOM_CORRECTION'
+        : t.category === 'GENERAL_INQUIRY'
+          ? 'GENERAL'
+          : t.category,
+    subject: t.subject,
+    description: t.description,
+    status: t.status === 'CLOSED' ? 'RESOLVED' : t.status,
+    createdAt: t.createdAt.slice(0, 16).replace('T', ' ')
+  }));
+
+  return {
+    persona,
+    vehicles,
+    familyMembers,
+    drivers,
+    emergencyContacts: dto.emergencyContacts,
+    incidents,
+    notifications,
+    supportTickets
+  };
 }
 
-export default function App() {
-  const firebaseWebConfig = useMemo(
+export function App(): React.JSX.Element {
+  const [activePersona, setActivePersona] =
+    useState<MobilePersona>('VEHICLE_OWNER');
+  const [activeScreen, setActiveScreen] =
+    useState<MobileScreenId>('DASHBOARD_HOME');
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string>('');
+
+  // Authentication State
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [authenticatedUser, setAuthenticatedUser] = useState<{
+    uid: string;
+    fullName: string;
+    phoneE164: string;
+    email?: string | null;
+    primaryRole: string;
+  } | null>(null);
+  const [authTab, setAuthTab] = useState<
+    | 'LOGIN'
+    | 'OWNER_ACTIVATION'
+    | 'FAMILY_INVITE_ACCEPT'
+    | 'PASSWORD_RESET'
+  >('LOGIN');
+  const [authPhone, setAuthPhone] = useState<string>('');
+  const [authPassword, setAuthPassword] = useState<string>('');
+  const [authInitialInvitePassword, setAuthInitialInvitePassword] =
+    useState<string>('');
+  const [authOtpCode, setAuthOtpCode] = useState<string>('');
+  const [authDevOtpHint, setAuthDevOtpHint] = useState<string | null>(null);
+  const [authStatusBanner, setAuthStatusBanner] = useState<string | null>(null);
+  const [authErrorBanner, setAuthErrorBanner] = useState<string | null>(null);
+
+  // Loading & Network Error State
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isOfflineError, setIsOfflineError] = useState<boolean>(false);
+  const [globalErrorBanner, setGlobalErrorBanner] = useState<string | null>(
+    null
+  );
+  const [globalSuccessBanner, setGlobalSuccessBanner] = useState<string | null>(
+    null
+  );
+  const [demoModeActive, setDemoModeActive] = useState<boolean>(false);
+
+  // Core State
+  const [vehicles, setVehicles] = useState<MobileVehicleRecord[]>([]);
+  const [familyMembers, setFamilyMembers] = useState<MobileFamilyMemberItem[]>(
+    []
+  );
+  const [drivers, setDrivers] = useState<MobileDriverItem[]>([]);
+  const [emergencyContacts, setEmergencyContacts] = useState<
+    EmergencyContactDocument[]
+  >([]);
+  const [incidents, setIncidents] = useState<MobileIncidentItem[]>([]);
+  const [notifications, setNotifications] = useState<MobileNotificationItem[]>(
+    []
+  );
+  const [supportTickets, setSupportTickets] = useState<
+    MobileSupportTicketItem[]
+  >([]);
+  const [telemetryHistoryCount, setTelemetryHistoryCount] = useState<number>(0);
+
+  // Family Invite Form State (Screen 6)
+  const [inviteFullName, setInviteFullName] = useState<string>('');
+  const [invitePhoneE164, setInvitePhoneE164] = useState<string>('');
+  const [inviteRelationship, setInviteRelationship] =
+    useState<string>('Spouse');
+  const [inviteInitialPassword, setInviteInitialPassword] =
+    useState<string>('TempFamilyPass1');
+  const [inviteVehicleId, setInviteVehicleId] = useState<string>('');
+  const [inviteBanner, setInviteBanner] = useState<string | null>(null);
+
+  // Driver Assignment Form State (Screen 7)
+  const [driverFullName, setDriverFullName] = useState<string>('');
+  const [driverPhoneE164, setDriverPhoneE164] = useState<string>('');
+  const [driverLicense, setDriverLicense] = useState<string>('');
+  const [driverBanner, setDriverBanner] = useState<string | null>(null);
+
+  // Emergency Contact Form State (Screen 8)
+  const [contactFullName, setContactFullName] = useState<string>('');
+  const [contactPhoneE164, setContactPhoneE164] = useState<string>('');
+  const [contactRelationship, setContactRelationship] =
+    useState<string>('Sibling');
+  const [contactBanner, setContactBanner] = useState<string | null>(null);
+
+  // Manual SOS State (Screen 9)
+  const [sosCountdownSec, setSosCountdownSec] = useState<number | null>(null);
+  const [activeSosIncidentId, setActiveSosIncidentId] = useState<string | null>(
+    null
+  );
+  const [sosSimulationNote, setSosSimulationNote] = useState<string>('');
+  const [sosStatusBanner, setSosStatusBanner] = useState<string | null>(null);
+
+  // Profile & Privacy Settings State (Screen 11)
+  const [profileFullName, setProfileFullName] = useState<string>('');
+  const [shareWithMedicalOnSos, setShareWithMedicalOnSos] =
+    useState<boolean>(true);
+  const [shareWithPoliceOnSos, setShareWithPoliceOnSos] =
+    useState<boolean>(true);
+  const [pushNotificationsEnabled, setPushNotificationsEnabled] =
+    useState<boolean>(true);
+  const [profileSavedBanner, setProfileSavedBanner] = useState<string | null>(
+    null
+  );
+
+  // Support Ticket Form State (Screen 12)
+  const [ticketCategory, setTicketCategory] = useState<
+    | 'DEVICE_ISSUE'
+    | 'ACCOUNT_RECOVERY'
+    | 'REGISTRATION_CORRECTION'
+    | 'GENERAL_INQUIRY'
+  >('DEVICE_ISSUE');
+  const [ticketSubject, setTicketSubject] = useState<string>('');
+  const [ticketDescription, setTicketDescription] = useState<string>('');
+  const [ticketBanner, setTicketBanner] = useState<string | null>(null);
+
+  const apiClient = useMemo(
     () =>
-      resolveFirebaseWebConfig(
-        (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
-      ),
+      new VeerXcapeApiClient({
+        onSessionExpired: (reason) => {
+          setIsAuthenticated(false);
+          setAuthenticatedUser(null);
+          setActiveScreen('AUTH_ONBOARDING');
+          setAuthErrorBanner(reason);
+        }
+      }),
     []
   );
 
-  // Authentication & Session State
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(true);
-  const [authMode, setAuthMode] = useState<AuthMode>('LOGIN');
-  const [activeRole, setActiveRole] = useState<UserRoleCode>(USER_ROLES.VEHICLE_OWNER);
-  const [activeScreen, setActiveScreen] = useState<MobileScreenId>('HOME_DASHBOARD');
+  const handleApiError = useCallback((err: unknown, fallbackMessage: string) => {
+    if (err instanceof VeerXcapeApiError) {
+      if (err.isNetworkError || err.isTimeout) {
+        setIsOfflineError(true);
+      }
+      const msg = `${err.message} (${err.code})`;
+      setGlobalErrorBanner(msg);
+      return msg;
+    }
+    const msg = err instanceof Error ? err.message : fallbackMessage;
+    setGlobalErrorBanner(msg);
+    return msg;
+  }, []);
 
-  // Auth Form Inputs
-  const [loginPhone, setLoginPhone] = useState('+919876543210');
-  const [loginPassword, setLoginPassword] = useState('VeerSafe2026');
-  const [otpInput, setOtpInput] = useState('482910');
-  const [initialInvitePassword, setInitialInvitePassword] = useState('TempInvite99');
-  const [newPasswordInput, setNewPasswordInput] = useState('StrongOwner99');
-  const [authMessage, setAuthMessage] = useState<{
-    type: 'error' | 'success';
-    text: string;
-  } | null>(null);
+  const loadMobileDashboard = useCallback(async () => {
+    if (demoModeActive) return;
+    setIsLoading(true);
+    setGlobalErrorBanner(null);
+    setIsOfflineError(false);
+    try {
+      const session = apiClient.getSession();
+      const dto = unwrapApiResponse(await apiClient.getMobileDashboard());
+      const currentUser = {
+        uid: session?.user.uid ?? dto.profile?.uid ?? 'usr_active',
+        fullName:
+          dto.profile?.fullName ??
+          session?.profile?.fullName ??
+          session?.user.phoneE164 ??
+          'VeerXcape User',
+        phoneE164: session?.user.phoneE164 ?? '+910000000000'
+      };
+      setAuthenticatedUser({
+        ...currentUser,
+        email: session?.user.email,
+        primaryRole: session?.user.primaryRole ?? 'VEHICLE_OWNER'
+      });
 
-  // Domain State
-  const [vehicles, setVehicles] = useState<MobileVehicleRecord[]>(INITIAL_VEHICLES);
-  const [selectedVehicleId, setSelectedVehicleId] = useState<string>(INITIAL_VEHICLES[0].id);
-  const [familyMembers, setFamilyMembers] =
-    useState<MobileFamilyMemberItem[]>(INITIAL_FAMILY_MEMBERS);
-  const [drivers, setDrivers] = useState<MobileDriverItem[]>(INITIAL_DRIVERS);
-  const [incidents, setIncidents] = useState<MobileIncidentItem[]>(INITIAL_INCIDENTS);
-  const [notifications, setNotifications] =
-    useState<MobileNotificationItem[]>(INITIAL_NOTIFICATIONS);
-  const [tickets, setTickets] = useState<MobileSupportTicketItem[]>(INITIAL_TICKETS);
+      const mapped = mapDashboardDtoToState(dto, currentUser);
+      setActivePersona(mapped.persona);
+      setVehicles(mapped.vehicles);
+      setFamilyMembers(mapped.familyMembers);
+      setDrivers(mapped.drivers);
+      setEmergencyContacts(mapped.emergencyContacts);
+      setIncidents(mapped.incidents);
+      setNotifications(mapped.notifications);
+      setSupportTickets(mapped.supportTickets);
 
-  // Emergency SOS Countdown State
-  const [sosCountdown, setSosCountdown] = useState<number | null>(null);
-  const [sosNote, setSosNote] = useState<string>(
-    'Immediate medical and highway patrol assistance required at current vehicle coordinates.'
-  );
-  const [bannerFeedback, setBannerFeedback] = useState<string | null>(null);
+      setProfileFullName(currentUser.fullName);
+      if (dto.profile) {
+        setShareWithMedicalOnSos(
+          dto.profile.privacySettings.shareWithMedicalOnSos
+        );
+        setShareWithPoliceOnSos(
+          dto.profile.privacySettings.shareWithPoliceOnSos
+        );
+        setPushNotificationsEnabled(
+          dto.profile.notificationPreferences.pushEnabled
+        );
+      }
 
-  // Family Member Invite Form State
-  const [inviteName, setInviteName] = useState('');
-  const [invitePhone, setInvitePhone] = useState('+91');
-  const [inviteRelationship, setInviteRelationship] = useState('Sibling');
-  const [inviteTempPassword, setInviteTempPassword] = useState('FamilyInit2026');
-  const [invitePerms, setInvitePerms] = useState({
-    canViewLocation: true,
-    canViewTelemetry: true,
-    canReceiveCriticalAlerts: true,
-    canViewIncidentHistory: true,
-    canTriggerSos: false
-  });
+      if (mapped.vehicles.length > 0) {
+        setSelectedVehicleId((prev) =>
+          mapped.vehicles.some((v) => v.id === prev)
+            ? prev
+            : mapped.vehicles[0].id
+        );
+        setInviteVehicleId((prev) =>
+          mapped.vehicles.some((v) => v.id === prev)
+            ? prev
+            : mapped.vehicles[0].id
+        );
+      }
+    } catch (err) {
+      handleApiError(err, 'Unable to load mobile dashboard.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [apiClient, demoModeActive, handleApiError]);
 
-  // Driver Form State
-  const [driverName, setDriverName] = useState('');
-  const [driverPhone, setDriverPhone] = useState('+91');
-  const [driverLicense, setDriverLicense] = useState('');
-  const [driverShift, setDriverShift] = useState('Mon–Fri · 09:00–18:00 IST');
+  useEffect(() => {
+    if (apiClient.hasActiveSession() && !isAuthenticated) {
+      setIsAuthenticated(true);
+      void loadMobileDashboard();
+    }
+  }, [apiClient, isAuthenticated, loadMobileDashboard]);
 
-  // Support Ticket Form State
-  const [ticketCategory, setTicketCategory] =
-    useState<MobileSupportTicketItem['category']>('DEVICE_ISSUE');
-  const [ticketSubject, setTicketSubject] = useState('');
-  const [ticketDescription, setTicketDescription] = useState('');
+  useEffect(() => {
+    if (!isAuthenticated || demoModeActive || !selectedVehicleId) return;
+    let cancelled = false;
+    void apiClient
+      .getVehicleTelemetry(selectedVehicleId, { limit: 15 })
+      .then((res) => {
+        if (!cancelled && res.success && res.data) {
+          setTelemetryHistoryCount(res.data.length);
+        }
+      })
+      .catch(() => {
+        // Non-fatal
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiClient, demoModeActive, isAuthenticated, selectedVehicleId]);
 
-  // Privacy & Consent Toggles
-  const [shareMedicalDataOnCrash, setShareMedicalDataOnCrash] = useState(true);
-  const [shareAnonymizedRoadHazards, setShareAnonymizedRoadHazards] = useState(true);
+  useEffect(() => {
+    if (sosCountdownSec === null || sosCountdownSec <= 0) return;
+    const timer = window.setInterval(() => {
+      setSosCountdownSec((prev) =>
+        prev === null || prev <= 1 ? 0 : prev - 1
+      );
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [sosCountdownSec]);
 
   const selectedVehicle = useMemo(
-    () => vehicles.find((v) => v.id === selectedVehicleId) ?? vehicles[0],
+    () =>
+      vehicles.find((v) => v.id === selectedVehicleId) ?? vehicles[0] ?? null,
     [vehicles, selectedVehicleId]
   );
 
-  // Compute standardized freshness using @veerxcape/shared-services
-  const freshnessEvaluation = useMemo(() => {
-    const nowMs = Date.now();
-    const lastLocIso = new Date(
-      nowMs - selectedVehicle.lastLocationUpdateSecondsAgo * 1000
-    ).toISOString();
-    const lastHbIso = new Date(
-      nowMs - selectedVehicle.lastHeartbeatSecondsAgo * 1000
-    ).toISOString();
-    return computeLocationFreshness({
-      lastLocationRecordedAt: lastLocIso,
-      lastHeartbeatAt: lastHbIso,
-      nowMs
-    });
-  }, [selectedVehicle]);
-
-  // Active Family Member view permissions (when viewing as FAMILY_MEMBER)
-  const activeFamilyMemberRecord = useMemo(
-    () =>
+  const activeFamilyMembership = useMemo(() => {
+    if (!selectedVehicle) return undefined;
+    return (
       familyMembers.find(
-        (f) => f.vehicleId === selectedVehicle.id && f.status === 'ACTIVE'
-      ) ?? familyMembers[0],
-    [familyMembers, selectedVehicle.id]
-  );
+        (m) => m.vehicleId === selectedVehicle.id && m.status === 'ACTIVE'
+      ) ?? familyMembers[0]
+    );
+  }, [familyMembers, selectedVehicle]);
 
-  // SOS 5-second safety countdown effect
-  useEffect(() => {
-    if (sosCountdown === null) return;
-    if (sosCountdown <= 0) {
-      const newIncident: MobileIncidentItem = {
-        id: `inc_${Math.floor(1000 + Math.random() * 9000)}`,
-        vehicleId: selectedVehicle.id,
-        registrationNumber: selectedVehicle.registrationNumber,
-        incidentType: INCIDENT_TYPES.MANUAL_SOS,
-        source: 'MANUAL_USER_SOS',
-        severity: 'CRITICAL',
-        lifecycleState: INCIDENT_LIFECYCLE_STATES.VISIBLE_TO_AUTHORITY,
-        jurisdictionCode: selectedVehicle.jurisdictionCode,
-        roadSegmentSummary: selectedVehicle.roadSegmentSummary,
-        lat: selectedVehicle.lat,
-        lng: selectedVehicle.lng,
-        occurredAt: 'Just now',
-        description: sosNote,
-        assignedAuthorityDept: ['MEDICAL', 'POLICE']
-      };
-      setIncidents((prev) => [newIncident, ...prev]);
-      setNotifications((prev) => [
-        {
-          id: `notif_${Date.now()}`,
-          title: `CRITICAL: Manual SOS Triggered (${selectedVehicle.registrationNumber})`,
-          body: `Incident ${newIncident.id} is now VISIBLE_TO_AUTHORITY (${selectedVehicle.jurisdictionCode}). Waiting for authority officer acknowledgement.`,
-          category: 'EMERGENCY',
-          status: NOTIFICATION_STATUSES.FCM_ACCEPTED,
-          createdAt: 'Just now'
-        },
-        ...prev
-      ]);
-      setSosCountdown(null);
-      setBannerFeedback(
-        `Emergency SOS ${newIncident.id} transmitted. Status: VISIBLE_TO_AUTHORITY (Awaiting Medical & Police Desk Acknowledgement).`
+  const canViewLiveLocation = useMemo(() => {
+    if (activePersona === 'VEHICLE_OWNER' || activePersona === 'DRIVER') {
+      return true;
+    }
+    return activeFamilyMembership?.permissions.canViewLocation ?? true;
+  }, [activePersona, activeFamilyMembership]);
+
+  const canTriggerRemoteSos = useMemo(() => {
+    if (activePersona === 'VEHICLE_OWNER' || activePersona === 'DRIVER') {
+      return true;
+    }
+    return activeFamilyMembership?.permissions.canTriggerSos ?? false;
+  }, [activePersona, activeFamilyMembership]);
+
+  const canManageAccessAndContacts = activePersona === 'VEHICLE_OWNER';
+
+  const activateExplicitDevDemo = () => {
+    if (!DEV_DEMO_ENABLED) return;
+    setDemoModeActive(true);
+    setIsAuthenticated(true);
+    setAuthenticatedUser({
+      uid: 'usr_owner_01',
+      fullName: 'Aarav Vikram Singh (Dev Demo)',
+      phoneE164: '+919876543210',
+      primaryRole: 'VEHICLE_OWNER'
+    });
+    setVehicles(INITIAL_VEHICLES);
+    setFamilyMembers(INITIAL_FAMILY_MEMBERS);
+    setDrivers(INITIAL_DRIVERS);
+    setIncidents(INITIAL_INCIDENTS);
+    setNotifications(INITIAL_NOTIFICATIONS);
+    setSupportTickets(INITIAL_TICKETS);
+    setSelectedVehicleId(INITIAL_VEHICLES[0].id);
+    setInviteVehicleId(INITIAL_VEHICLES[0].id);
+    setActiveScreen('DASHBOARD_HOME');
+  };
+
+  // =========================================================================
+  // HANDLERS: AUTHENTICATION & ONBOARDING (Screen 1)
+  // =========================================================================
+  const handleRequestOtp = async () => {
+    setAuthErrorBanner(null);
+    setAuthStatusBanner(null);
+    setAuthDevOtpHint(null);
+    const cleanPhone = authPhone.trim();
+    const parsedPhone = phoneE164Schema.safeParse(cleanPhone);
+    if (!parsedPhone.success) {
+      setAuthErrorBanner(
+        'Enter a valid E.164 phone number (e.g., +919876543210) to request an OTP.'
       );
-      setActiveScreen('INCIDENT_HISTORY');
       return;
     }
-    const timer = setTimeout(() => {
-      setSosCountdown((prev) => (prev !== null ? prev - 1 : null));
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [sosCountdown, selectedVehicle, sosNote]);
 
-  // Handlers for Authentication Flows
-  const handleCustomerLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthMessage(null);
-    const parsed = customerPhoneLoginSchema.safeParse({
-      phoneE164: loginPhone,
-      password: loginPassword
-    });
-    if (!parsed.success) {
-      setAuthMessage({
-        type: 'error',
-        text: parsed.error.issues[0]?.message ?? 'Invalid phone or password.'
-      });
-      return;
+    const purpose =
+      authTab === 'OWNER_ACTIVATION'
+        ? 'CUSTOMER_ACTIVATION'
+        : authTab === 'FAMILY_INVITE_ACCEPT'
+          ? 'FAMILY_ACTIVATION'
+          : 'PASSWORD_RESET';
+
+    setIsLoading(true);
+    try {
+      const res = unwrapApiResponse(
+        await apiClient.requestOtp({
+          phoneE164: cleanPhone,
+          purpose
+        })
+      );
+      if (res.demoOtpForTestingOnly) {
+        setAuthDevOtpHint(res.demoOtpForTestingOnly);
+      }
+      setAuthStatusBanner(
+        `OTP challenge (${res.challengeId}) sent to ${cleanPhone}. Valid until ${new Date(res.expiresAt).toLocaleTimeString()}.`
+      );
+    } catch (err) {
+      const msg = handleApiError(err, 'Failed to request OTP.');
+      setAuthErrorBanner(msg);
+    } finally {
+      setIsLoading(false);
     }
-    setIsAuthenticated(true);
-    setBannerFeedback(`Signed in as ${parsed.data.phoneE164} via Firebase Custom Token.`);
   };
 
-  const handleActivateShowroomAccount = (e: React.FormEvent) => {
+  const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setAuthMessage(null);
-    const parsed = customerAccountActivationSchema.safeParse({
-      phoneE164: loginPhone,
-      otpCode: otpInput,
-      newPassword: newPasswordInput
-    });
-    if (!parsed.success) {
-      setAuthMessage({
-        type: 'error',
-        text: parsed.error.issues[0]?.message ?? 'Invalid activation details.'
+    setAuthErrorBanner(null);
+    setAuthStatusBanner(null);
+    setGlobalErrorBanner(null);
+
+    if (authTab === 'LOGIN') {
+      const parsed = customerPhoneLoginSchema.safeParse({
+        phoneE164: authPhone.trim(),
+        password: authPassword
       });
+      if (!parsed.success) {
+        setAuthErrorBanner(
+          parsed.error.issues[0]?.message ?? 'Invalid login credentials.'
+        );
+        return;
+      }
+      setIsLoading(true);
+      try {
+        const session = unwrapApiResponse(
+          await apiClient.loginWithPhone(parsed.data)
+        );
+        setDemoModeActive(false);
+        setIsAuthenticated(true);
+        setAuthPassword('');
+        setAuthStatusBanner(
+          `Signed in as ${session.profile?.fullName ?? session.user.phoneE164}.`
+        );
+        await loadMobileDashboard();
+        setActiveScreen('DASHBOARD_HOME');
+      } catch (err) {
+        const msg = handleApiError(err, 'Authentication failed.');
+        setAuthErrorBanner(msg);
+      } finally {
+        setIsLoading(false);
+      }
       return;
     }
-    setIsAuthenticated(true);
-    setBannerFeedback(
-      `Account activated for ${parsed.data.phoneE164}. Scrypt password verifier stored in _authSecrets.`
-    );
+
+    setIsLoading(true);
+    try {
+      if (authTab === 'OWNER_ACTIVATION') {
+        const parsed = customerAccountActivationSchema.safeParse({
+          phoneE164: authPhone.trim(),
+          otpCode: authOtpCode.trim(),
+          newPassword: authPassword
+        });
+        if (!parsed.success) {
+          setAuthErrorBanner(
+            parsed.error.issues[0]?.message ??
+              'Provide phone, 6-digit OTP, and a strong password.'
+          );
+          return;
+        }
+        const session = unwrapApiResponse(
+          await apiClient.activateCustomerAccount(parsed.data)
+        );
+        setDemoModeActive(false);
+        setIsAuthenticated(true);
+        setAuthPassword('');
+        setAuthStatusBanner(
+          `Showroom-linked owner account activated (${session.user.phoneE164}).`
+        );
+        await loadMobileDashboard();
+        setActiveScreen('DASHBOARD_HOME');
+        return;
+      }
+
+      if (authTab === 'FAMILY_INVITE_ACCEPT') {
+        const parsed = familyMemberActivationSchema.safeParse({
+          phoneE164: authPhone.trim(),
+          otpCode: authOtpCode.trim(),
+          initialPassword: authInitialInvitePassword.trim(),
+          newPermanentPassword: authPassword
+        });
+        if (!parsed.success) {
+          setAuthErrorBanner(
+            parsed.error.issues[0]?.message ??
+              'Provide phone, 6-digit OTP, initial invite password, and your new permanent password.'
+          );
+          return;
+        }
+        const activated = unwrapApiResponse(
+          await apiClient.activateFamilyAccount(parsed.data)
+        );
+        setDemoModeActive(false);
+        setIsAuthenticated(true);
+        setAuthPassword('');
+        setAuthStatusBanner(
+          `Family invite activated for ${activated.activatedVehicleIds.length} vehicle(s).`
+        );
+        await loadMobileDashboard();
+        setActiveScreen('DASHBOARD_HOME');
+        return;
+      }
+
+      if (authTab === 'PASSWORD_RESET') {
+        const parsed = customerAccountActivationSchema.safeParse({
+          phoneE164: authPhone.trim(),
+          otpCode: authOtpCode.trim(),
+          newPassword: authPassword
+        });
+        if (!parsed.success) {
+          setAuthErrorBanner(
+            parsed.error.issues[0]?.message ??
+              'Provide phone, 6-digit OTP, and new password.'
+          );
+          return;
+        }
+        unwrapApiResponse(await apiClient.resetPassword(parsed.data));
+        setAuthTab('LOGIN');
+        setAuthPassword('');
+        setAuthStatusBanner(
+          'Password reset completed and prior sessions revoked. Sign in with your new password.'
+        );
+      }
+    } catch (err) {
+      const msg = handleApiError(err, 'Account activation / reset failed.');
+      setAuthErrorBanner(msg);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleActivateFamilyInvite = (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthMessage(null);
-    const parsed = familyMemberActivationSchema.safeParse({
-      phoneE164: loginPhone,
-      otpCode: otpInput,
-      initialPassword: initialInvitePassword,
-      newPermanentPassword: newPasswordInput
-    });
-    if (!parsed.success) {
-      setAuthMessage({
-        type: 'error',
-        text: parsed.error.issues[0]?.message ?? 'Invalid family activation input.'
-      });
-      return;
+  const handleLogout = async () => {
+    setIsLoading(true);
+    try {
+      if (!demoModeActive) {
+        await apiClient.logout();
+      }
+    } finally {
+      setDemoModeActive(false);
+      setIsAuthenticated(false);
+      setAuthenticatedUser(null);
+      setVehicles([]);
+      setFamilyMembers([]);
+      setDrivers([]);
+      setEmergencyContacts([]);
+      setIncidents([]);
+      setNotifications([]);
+      setSupportTickets([]);
+      setActiveScreen('AUTH_ONBOARDING');
+      setIsLoading(false);
     }
-    setFamilyMembers((prev) =>
-      prev.map((m) =>
-        m.phoneE164 === parsed.data.phoneE164 ? { ...m, status: 'ACTIVE' } : m
-      )
-    );
-    setActiveRole(USER_ROLES.FAMILY_MEMBER);
-    setIsAuthenticated(true);
-    setBannerFeedback(
-      `Family invite activated for ${parsed.data.phoneE164}. Initial password replaced with your private password.`
-    );
   };
 
-  const handlePasswordRecovery = (e: React.FormEvent) => {
+  // =========================================================================
+  // HANDLERS: FAMILY INVITATION & PERMISSIONS (Screen 6)
+  // =========================================================================
+  const handleInviteFamilyMember = async (e: React.FormEvent) => {
     e.preventDefault();
-    setAuthMessage(null);
-    const phoneCheck = phoneE164Schema.safeParse(loginPhone);
-    const otpCheck = otpCodeSchema.safeParse(otpInput);
-    const passCheck = strongPasswordSchema.safeParse(newPasswordInput);
-    if (!phoneCheck.success || !otpCheck.success || !passCheck.success) {
-      setAuthMessage({
-        type: 'error',
-        text:
-          phoneCheck.error?.issues[0]?.message ||
-          otpCheck.error?.issues[0]?.message ||
-          passCheck.error?.issues[0]?.message ||
-          'Validation failed'
-      });
-      return;
-    }
-    setAuthMessage({
-      type: 'success',
-      text: 'Password reset verified via OTP. All prior refresh tokens revoked. Please sign in.'
-    });
-    setAuthMode('LOGIN');
-  };
+    setInviteBanner(null);
+    setGlobalErrorBanner(null);
+    if (!canManageAccessAndContacts) return;
 
-  // Invite Family Member Handler
-  const handleInviteFamilyMember = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (activeRole !== USER_ROLES.VEHICLE_OWNER) {
-      setBannerFeedback('Only the Vehicle Owner can invite or modify family members.');
-      return;
-    }
+    const targetVehicleId = inviteVehicleId || selectedVehicle?.id || '';
     const parsed = familyMemberInviteSchema.safeParse({
-      vehicleId: selectedVehicle.id,
-      familyMemberName: inviteName,
-      familyMemberPhoneE164: invitePhone,
-      relationship: inviteRelationship,
-      initialPassword: inviteTempPassword,
-      permissions: invitePerms
+      vehicleId: targetVehicleId,
+      familyMemberName: inviteFullName.trim(),
+      familyMemberPhoneE164: invitePhoneE164.trim(),
+      relationship: inviteRelationship.trim(),
+      initialPassword: inviteInitialPassword,
+      permissions: {
+        canViewLocation: true,
+        canViewTelemetry: true,
+        canReceiveCriticalAlerts: true,
+        canViewIncidentHistory: true,
+        canTriggerSos: false
+      }
     });
+
     if (!parsed.success) {
-      setBannerFeedback(`Validation Error: ${parsed.error.issues[0]?.message}`);
+      setInviteBanner(
+        `Validation error: ${parsed.error.issues[0]?.message ?? 'Invalid family invite input.'}`
+      );
       return;
     }
-    const newMember: MobileFamilyMemberItem = {
-      id: `fam_${Date.now()}`,
-      vehicleId: selectedVehicle.id,
-      fullName: parsed.data.familyMemberName,
-      phoneE164: parsed.data.familyMemberPhoneE164,
-      relationship: parsed.data.relationship,
-      status: 'PENDING_OTP_AND_PASSWORD_CHANGE',
-      invitedAt: 'Just now',
-      permissions: parsed.data.permissions
-    };
-    setFamilyMembers((prev) => [newMember, ...prev]);
-    setInviteName('');
-    setInvitePhone('+91');
-    setBannerFeedback(
-      `Invited ${newMember.fullName} (${newMember.phoneE164}). They must verify OTP & change initial password on first login.`
-    );
+
+    if (demoModeActive) {
+      setInviteBanner('Demo family invite created.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const created = unwrapApiResponse(
+        await apiClient.inviteFamilyMember(parsed.data)
+      );
+      setInviteFullName('');
+      setInvitePhoneE164('');
+      setInviteBanner(
+        `Invitation created for ${created.membership.familyMemberName} (${created.membership.familyMemberPhoneE164}).`
+      );
+      await loadMobileDashboard();
+    } catch (err) {
+      handleApiError(err, 'Failed to invite family member.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // Toggle Family Permission
-  const toggleFamilyPermission = (
-    memberId: string,
+  const handleToggleFamilyPermission = async (
+    membershipId: string,
     key: keyof MobileFamilyMemberItem['permissions']
   ) => {
-    if (activeRole !== USER_ROLES.VEHICLE_OWNER) {
-      setBannerFeedback('Only the Vehicle Owner can modify family member permissions.');
+    if (!canManageAccessAndContacts) return;
+    const target = familyMembers.find((m) => m.id === membershipId);
+    if (!target) return;
+
+    const updatedPermissions = {
+      ...target.permissions,
+      [key]: !target.permissions[key]
+    };
+
+    if (demoModeActive) {
+      setFamilyMembers((prev) =>
+        prev.map((m) =>
+          m.id === membershipId ? { ...m, permissions: updatedPermissions } : m
+        )
+      );
       return;
     }
-    setFamilyMembers((prev) =>
-      prev.map((m) =>
-        m.id === memberId
-          ? {
-              ...m,
-              permissions: {
-                ...m.permissions,
-                [key]: !m.permissions[key]
-              }
-            }
-          : m
-      )
-    );
-    setBannerFeedback('Family member permission updated and logged to immutable audit trail.');
+
+    setIsLoading(true);
+    try {
+      unwrapApiResponse(
+        await apiClient.updateFamilyMembership(membershipId, {
+          action: 'UPDATE_PERMISSIONS',
+          permissions: updatedPermissions
+        })
+      );
+      await loadMobileDashboard();
+    } catch (err) {
+      handleApiError(err, 'Failed to update family member permissions.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // Revoke Family Member Immediately
-  const revokeFamilyMember = (memberId: string) => {
-    if (activeRole !== USER_ROLES.VEHICLE_OWNER) return;
-    setFamilyMembers((prev) =>
-      prev.map((m) => (m.id === memberId ? { ...m, status: 'REVOKED' } : m))
-    );
-    setBannerFeedback(
-      'Family membership immediately set to REVOKED. Server-side access and active tokens invalidated.'
-    );
+  const handleRevokeFamilyMember = async (membershipId: string) => {
+    if (!canManageAccessAndContacts) return;
+    if (demoModeActive) {
+      setFamilyMembers((prev) =>
+        prev.map((m) =>
+          m.id === membershipId ? { ...m, status: 'REVOKED' } : m
+        )
+      );
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      unwrapApiResponse(
+        await apiClient.updateFamilyMembership(membershipId, {
+          action: 'REVOKE'
+        })
+      );
+      setInviteBanner('Family membership revoked on backend.');
+      await loadMobileDashboard();
+    } catch (err) {
+      handleApiError(err, 'Failed to revoke family membership.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // Add Authorized Driver
-  const handleAddDriver = (e: React.FormEvent) => {
+  // =========================================================================
+  // HANDLERS: DRIVER ASSIGNMENT (Screen 7)
+  // =========================================================================
+  const handleAssignDriver = async (e: React.FormEvent) => {
     e.preventDefault();
-    const phoneRes = phoneE164Schema.safeParse(driverPhone);
-    if (!phoneRes.success || driverName.trim().length < 2 || driverLicense.trim().length < 5) {
-      setBannerFeedback('Please enter a valid driver name, E.164 phone number, and license ID.');
+    setDriverBanner(null);
+    setGlobalErrorBanner(null);
+    if (!canManageAccessAndContacts || !selectedVehicle) return;
+
+    const cleanPhone = driverPhoneE164.trim();
+    const phoneCheck = phoneE164Schema.safeParse(cleanPhone);
+    if (!driverFullName.trim() || !phoneCheck.success) {
+      setDriverBanner(
+        'Provide driver full name and a valid E.164 phone number (+91...).'
+      );
       return;
     }
-    const newDrv: MobileDriverItem = {
-      id: `drv_${Date.now()}`,
-      vehicleId: selectedVehicle.id,
-      fullName: driverName.trim(),
-      phoneE164: phoneRes.data,
-      licenseNumber: driverLicense.trim().toUpperCase(),
-      status: 'ACTIVE',
-      assignedShift: driverShift
-    };
-    setDrivers((prev) => [newDrv, ...prev]);
-    setDriverName('');
-    setDriverPhone('+91');
-    setDriverLicense('');
-    setBannerFeedback(`Driver ${newDrv.fullName} authorized for ${selectedVehicle.registrationNumber}.`);
+
+    if (demoModeActive) {
+      setDriverBanner('Demo driver assigned.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      unwrapApiResponse(
+        await apiClient.assignOrRevokeDriver({
+          vehicleId: selectedVehicle.id,
+          driverPhoneE164: cleanPhone,
+          driverFullName: driverFullName.trim(),
+          action: 'ASSIGN'
+        })
+      );
+      setDriverFullName('');
+      setDriverPhoneE164('');
+      setDriverLicense('');
+      setDriverBanner(
+        `Driver ${driverFullName.trim()} (${cleanPhone}) assigned to ${selectedVehicle.registrationNumber}.`
+      );
+      await loadMobileDashboard();
+    } catch (err) {
+      handleApiError(err, 'Failed to assign driver.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // Simulate STM32U575 Hardware State or Freshness Change
-  const updateVehicleFreshnessSimulation = (locSec: number, hbSec: number) => {
-    setVehicles((prev) =>
-      prev.map((v) =>
-        v.id === selectedVehicle.id
-          ? {
-              ...v,
-              lastLocationUpdateSecondsAgo: locSec,
-              lastHeartbeatSecondsAgo: hbSec
-            }
-          : v
-      )
-    );
+  const handleRevokeDriver = async (driverAssignmentId: string) => {
+    if (!canManageAccessAndContacts) return;
+    const target = drivers.find((d) => d.id === driverAssignmentId);
+    if (!target) return;
+
+    if (demoModeActive) {
+      setDrivers((prev) =>
+        prev.map((d) =>
+          d.id === driverAssignmentId ? { ...d, status: 'REVOKED' } : d
+        )
+      );
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      unwrapApiResponse(
+        await apiClient.assignOrRevokeDriver({
+          vehicleId: target.vehicleId,
+          driverPhoneE164: target.phoneE164,
+          driverFullName: target.fullName,
+          action: 'REVOKE'
+        })
+      );
+      setDriverBanner(`Driver ${target.fullName} access revoked.`);
+      await loadMobileDashboard();
+    } catch (err) {
+      handleApiError(err, 'Failed to revoke driver access.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const simulateHardwareEvent = (
-    type:
-      | typeof INCIDENT_TYPES.ACCIDENT_DETECTED
-      | typeof INCIDENT_TYPES.PARKED_OCCUPANT_ALERT
-      | typeof INCIDENT_TYPES.THEFT_OR_INTRUSION_ALERT
-      | typeof INCIDENT_TYPES.DEVICE_POWER_FAILURE
-  ) => {
-    const newInc: MobileIncidentItem = {
-      id: `inc_hw_${Math.floor(1000 + Math.random() * 9000)}`,
-      vehicleId: selectedVehicle.id,
-      registrationNumber: selectedVehicle.registrationNumber,
-      incidentType: type,
-      source: 'STM32U575_HARDWARE',
-      severity: type === INCIDENT_TYPES.ACCIDENT_DETECTED ? 'CRITICAL' : 'HIGH',
-      lifecycleState: INCIDENT_LIFECYCLE_STATES.VISIBLE_TO_AUTHORITY,
-      jurisdictionCode: selectedVehicle.jurisdictionCode,
-      roadSegmentSummary: selectedVehicle.roadSegmentSummary,
-      lat: selectedVehicle.lat,
-      lng: selectedVehicle.lng,
-      occurredAt: 'Just now (STM32U575 Signed Packet)',
-      description: `Hardware sensor packet verified via HMAC-SHA256 (${selectedVehicle.assignedDeviceSerial}). Event routed to ${selectedVehicle.jurisdictionCode} authorities.`,
-      assignedAuthorityDept:
-        type === INCIDENT_TYPES.THEFT_OR_INTRUSION_ALERT
-          ? ['POLICE']
-          : ['MEDICAL', 'POLICE']
-    };
-    setIncidents((prev) => [newInc, ...prev]);
-    setBannerFeedback(
-      `Simulated STM32U575 ${type} packet ingested. Incident ${newInc.id} is now VISIBLE_TO_AUTHORITY.`
-    );
+  // =========================================================================
+  // HANDLERS: EMERGENCY CONTACTS (Screen 8)
+  // =========================================================================
+  const handleAddEmergencyContact = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setContactBanner(null);
+    setGlobalErrorBanner(null);
+    if (!canManageAccessAndContacts || !selectedVehicle) return;
+    const cleanPhone = contactPhoneE164.trim();
+    const phoneCheck = phoneE164Schema.safeParse(cleanPhone);
+    if (!contactFullName.trim() || !phoneCheck.success) {
+      setContactBanner(
+        'Provide contact full name and a valid E.164 phone number (+91...).'
+      );
+      return;
+    }
+
+    const nextPriority = Math.min(5, emergencyContacts.length + 1) as
+      | 1
+      | 2
+      | 3
+      | 4
+      | 5;
+
+    if (demoModeActive) {
+      setContactBanner('Demo emergency contact added.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      unwrapApiResponse(
+        await apiClient.upsertEmergencyContact({
+          vehicleId: selectedVehicle.id,
+          name: contactFullName.trim(),
+          phoneE164: cleanPhone,
+          relationship: contactRelationship.trim() || 'Emergency Contact',
+          priorityOrder: nextPriority,
+          notifyOnAccident: true,
+          notifyOnSos: true,
+          notifyOnOccupantAlert: true
+        })
+      );
+      setContactFullName('');
+      setContactPhoneE164('');
+      setContactBanner(
+        `Emergency contact ${contactFullName.trim()} saved on backend.`
+      );
+      await loadMobileDashboard();
+    } catch (err) {
+      handleApiError(err, 'Failed to save emergency contact.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // Cancel False Alarm
-  const handleCancelFalseAlarm = (incidentId: string) => {
-    setIncidents((prev) =>
-      prev.map((inc) =>
-        inc.id === incidentId
-          ? { ...inc, lifecycleState: INCIDENT_LIFECYCLE_STATES.FALSE_ALARM_CANCELLED }
-          : inc
-      )
-    );
-    setBannerFeedback(`Incident ${incidentId} marked as FALSE_ALARM_CANCELLED by verified user.`);
+  const handleRemoveEmergencyContact = async (contactId: string) => {
+    if (!canManageAccessAndContacts) return;
+    if (demoModeActive) return;
+
+    setIsLoading(true);
+    try {
+      unwrapApiResponse(await apiClient.deleteEmergencyContact(contactId));
+      setContactBanner('Emergency contact removed.');
+      await loadMobileDashboard();
+    } catch (err) {
+      handleApiError(err, 'Failed to delete emergency contact.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // Notification Status Progression (FCM_ACCEPTED -> CLIENT_DELIVERED_ACK -> READ)
-  const advanceNotificationState = (notifId: string) => {
-    setNotifications((prev) =>
-      prev.map((n) => {
-        if (n.id !== notifId) return n;
-        if (n.status === NOTIFICATION_STATUSES.FCM_ACCEPTED) {
-          return {
-            ...n,
-            status: NOTIFICATION_STATUSES.CLIENT_DELIVERED_ACK,
-            deliveredAt: 'Just now'
-          };
+  // =========================================================================
+  // HANDLERS: MANUAL SOS & FALSE ALARM WINDOW (Screen 9)
+  // =========================================================================
+  const handleTriggerManualSos = async (isSimulated: boolean) => {
+    setSosStatusBanner(null);
+    setGlobalErrorBanner(null);
+    if (!canTriggerRemoteSos) {
+      setSosStatusBanner(
+        'Your current role/permission does not permit triggering remote SOS for this vehicle.'
+      );
+      return;
+    }
+    if (!selectedVehicle) {
+      setSosStatusBanner('No registered vehicle is linked to your account.');
+      return;
+    }
+
+    if (demoModeActive) {
+      setActiveSosIncidentId('inc_demo_sos');
+      setSosCountdownSec(20);
+      setSosStatusBanner('Demo SOS initiated.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const created = unwrapApiResponse(
+        await apiClient.triggerManualSos({
+          vehicleId: selectedVehicle.id,
+          location: {
+            lat: selectedVehicle.lat,
+            lng: selectedVehicle.lng,
+            accuracyMeters: 8,
+            roadSegmentSummary: selectedVehicle.roadSegmentSummary,
+            jurisdictionCode: selectedVehicle.jurisdictionCode
+          },
+          isSimulated
+        })
+      );
+      setActiveSosIncidentId(created.id);
+      setSosCountdownSec(20);
+      setSosStatusBanner(
+        `${isSimulated ? 'Simulated SOS Drill' : 'LIVE EMERGENCY SOS'} (${created.id}) created on backend for ${selectedVehicle.registrationNumber}. State: ${created.lifecycleState}.`
+      );
+      await loadMobileDashboard();
+    } catch (err) {
+      handleApiError(err, 'Failed to trigger Manual SOS on backend.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCancelFalseAlarm = async () => {
+    if (!activeSosIncidentId) return;
+    setGlobalErrorBanner(null);
+
+    if (demoModeActive) {
+      setSosCountdownSec(null);
+      setActiveSosIncidentId(null);
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const updated = unwrapApiResponse(
+        await apiClient.respondToIncidentByCustomer(activeSosIncidentId, {
+          action: 'CANCEL_FALSE_ALARM',
+          note:
+            sosSimulationNote.trim() ||
+            'Occupant confirmed safety and cancelled within false-alarm window.'
+        })
+      );
+      setSosCountdownSec(null);
+      setSosStatusBanner(
+        `Incident ${updated.id} updated to ${updated.lifecycleState} on backend.`
+      );
+      setActiveSosIncidentId(null);
+      await loadMobileDashboard();
+    } catch (err) {
+      handleApiError(err, 'Failed to cancel SOS incident.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleAcknowledgeIncidentFromDetail = async (incidentId: string) => {
+    if (demoModeActive) return;
+    setIsLoading(true);
+    try {
+      unwrapApiResponse(
+        await apiClient.respondToIncidentByCustomer(incidentId, {
+          action: 'ACKNOWLEDGE_ALERT',
+          note: 'Acknowledged by authorized user from mobile app.'
+        })
+      );
+      setGlobalSuccessBanner(`Incident ${incidentId} acknowledged.`);
+      await loadMobileDashboard();
+    } catch (err) {
+      handleApiError(err, 'Failed to acknowledge incident.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // =========================================================================
+  // HANDLERS: NOTIFICATIONS (Screen 10)
+  // =========================================================================
+  const handleAcknowledgeNotification = async (notificationId: string) => {
+    const target = notifications.find((n) => n.id === notificationId);
+    if (!target || demoModeActive) return;
+
+    setIsLoading(true);
+    try {
+      if (target.status === 'QUEUED' || target.status === 'FCM_ACCEPTED') {
+        unwrapApiResponse(
+          await apiClient.ackNotificationDelivered(notificationId)
+        );
+      } else {
+        unwrapApiResponse(await apiClient.markNotificationRead(notificationId));
+      }
+      await loadMobileDashboard();
+    } catch (err) {
+      handleApiError(err, 'Failed to acknowledge notification.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleMarkAllNotificationsRead = async () => {
+    if (demoModeActive) return;
+    setIsLoading(true);
+    try {
+      for (const n of notifications) {
+        if (n.status !== 'READ') {
+          unwrapApiResponse(await apiClient.markNotificationRead(n.id));
         }
-        return {
-          ...n,
-          status: NOTIFICATION_STATUSES.READ,
-          readAt: 'Just now'
-        };
-      })
-    );
+      }
+      await loadMobileDashboard();
+    } catch (err) {
+      handleApiError(err, 'Failed to mark notifications as read.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // Submit Support Ticket
-  const handleCreateTicket = (e: React.FormEvent) => {
+  // =========================================================================
+  // HANDLERS: PROFILE & PRIVACY (Screen 11)
+  // =========================================================================
+  const handleSaveProfileSettings = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (ticketSubject.trim().length < 4 || ticketDescription.trim().length < 8) {
-      setBannerFeedback('Please provide a clear subject and description for your support ticket.');
+    setProfileSavedBanner(null);
+    setGlobalErrorBanner(null);
+
+    if (demoModeActive) {
+      setProfileSavedBanner('Demo profile settings updated.');
       return;
     }
-    const newTicket: MobileSupportTicketItem = {
-      id: `tkt_${Math.floor(400 + Math.random() * 500)}`,
-      vehicleId: selectedVehicle.id,
-      category: ticketCategory,
-      subject: ticketSubject.trim(),
-      description: ticketDescription.trim(),
-      status: 'OPEN',
-      createdAt: new Date().toISOString().slice(0, 10)
-    };
-    setTickets((prev) => [newTicket, ...prev]);
-    setTicketSubject('');
-    setTicketDescription('');
-    setBannerFeedback(`Support Ticket ${newTicket.id} submitted to VeerXcape Support Desk.`);
+
+    setIsLoading(true);
+    try {
+      unwrapApiResponse(
+        await apiClient.updateUserProfile({
+          fullName: profileFullName.trim() || undefined,
+          notificationPreferences: {
+            pushEnabled: pushNotificationsEnabled,
+            criticalAlertsOnly: false
+          },
+          privacySettings: {
+            shareWithMedicalOnSos,
+            shareWithPoliceOnSos
+          }
+        })
+      );
+      setProfileSavedBanner(
+        'Profile, notification preferences, and emergency disclosure settings saved to backend.'
+      );
+      await loadMobileDashboard();
+    } catch (err) {
+      handleApiError(err, 'Failed to update profile settings.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // ============================================================================
-  // UNAUTHENTICATED VIEW (Screens 1, 2, 3: Splash/Onboarding, Login/Activation, Recovery)
-  // ============================================================================
-  if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen bg-slate-100 flex flex-col justify-center items-center p-4">
-        <div className="w-full max-w-md bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-          <div className="bg-[#1E40AF] text-white p-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <Shield className="w-7 h-7 text-white" />
-                <div>
-                  <h1 className="text-lg font-bold tracking-tight">VeerXcape Mobile</h1>
-                  <p className="text-xs text-blue-100">
-                    Connected Vehicle Safety & STM32U575 Companion
-                  </p>
-                </div>
-              </div>
-              <span className="text-[11px] font-mono bg-blue-900/60 px-2.5 py-1 rounded-full border border-blue-400/30">
-                {VEERXCAPE_NATIVE_APP_METADATA.bundleId}
-              </span>
-            </div>
-          </div>
+  // =========================================================================
+  // HANDLERS: SUPPORT TICKET (Screen 12)
+  // =========================================================================
+  const handleCreateSupportTicket = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setTicketBanner(null);
+    setGlobalErrorBanner(null);
+    if (!ticketSubject.trim() || !ticketDescription.trim()) {
+      setTicketBanner('Enter both a ticket subject and detailed description.');
+      return;
+    }
 
-          {/* Auth Mode Switcher Tabs */}
-          <div className="grid grid-cols-4 border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-600">
-            <button
-              type="button"
-              onClick={() => {
-                setAuthMode('SPLASH_ONBOARDING');
-                setAuthMessage(null);
-              }}
-              className={`py-2.5 px-2 border-b-2 transition ${
-                authMode === 'SPLASH_ONBOARDING'
-                  ? 'border-[#2563EB] text-[#1E40AF] bg-white font-semibold'
-                  : 'border-transparent'
-              }`}
-            >
-              1. Intro
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setAuthMode('LOGIN');
-                setAuthMessage(null);
-              }}
-              className={`py-2.5 px-2 border-b-2 transition ${
-                authMode === 'LOGIN'
-                  ? 'border-[#2563EB] text-[#1E40AF] bg-white font-semibold'
-                  : 'border-transparent'
-              }`}
-            >
-              2. Sign In
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setAuthMode('ACTIVATE_SHOWROOM_ACCOUNT');
-                setAuthMessage(null);
-              }}
-              className={`py-2.5 px-2 border-b-2 transition ${
-                authMode === 'ACTIVATE_SHOWROOM_ACCOUNT' ||
-                authMode === 'ACTIVATE_FAMILY_INVITE'
-                  ? 'border-[#2563EB] text-[#1E40AF] bg-white font-semibold'
-                  : 'border-transparent'
-              }`}
-            >
-              3. Activate
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setAuthMode('FORGOT_PASSWORD');
-                setAuthMessage(null);
-              }}
-              className={`py-2.5 px-2 border-b-2 transition ${
-                authMode === 'FORGOT_PASSWORD'
-                  ? 'border-[#2563EB] text-[#1E40AF] bg-white font-semibold'
-                  : 'border-transparent'
-              }`}
-            >
-              4. Recovery
-            </button>
-          </div>
+    if (demoModeActive) {
+      setTicketBanner('Demo support ticket created.');
+      return;
+    }
 
-          <div className="p-6 space-y-4">
-            {authMessage && (
-              <div
-                className={`p-3 rounded-lg text-xs font-medium border ${
-                  authMessage.type === 'error'
-                    ? 'bg-red-50 text-red-800 border-red-200'
-                    : 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                }`}
-              >
-                {authMessage.text}
-              </div>
-            )}
+    setIsLoading(true);
+    try {
+      const created = unwrapApiResponse(
+        await apiClient.createSupportTicket({
+          vehicleId: selectedVehicle?.id ?? null,
+          category: ticketCategory,
+          subject: ticketSubject.trim(),
+          description: ticketDescription.trim()
+        })
+      );
+      setTicketSubject('');
+      setTicketDescription('');
+      setTicketBanner(
+        `Support ticket ${created.id} submitted to VeerXcape Support.`
+      );
+      await loadMobileDashboard();
+    } catch (err) {
+      handleApiError(err, 'Failed to submit support ticket.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-            {authMode === 'SPLASH_ONBOARDING' && (
-              <div className="space-y-4">
-                <div className="p-4 rounded-xl bg-blue-50/70 border border-blue-100 space-y-2">
-                  <div className="text-xs font-bold uppercase tracking-wider text-[#1E40AF]">
-                    Showroom-Provisioned Vehicle Architecture
-                  </div>
-                  <p className="text-xs text-slate-700 leading-relaxed">
-                    Vehicles and STM32U575 hardware units are registered exclusively by authorized
-                    OEM Dealerships. Customers never self-register vehicles—simply activate your
-                    showroom-verified phone number or family invitation to begin.
-                  </p>
-                </div>
-                <div className="space-y-2 text-xs text-slate-600">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <span>Real-time STM32U575 crash, cabin radar, CO & smoke monitoring</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <span>Explicit LIVE / RECENT / STALE / OFFLINE telemetry freshness</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <span>Granular family member permissions & instant revocation</span>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setAuthMode('LOGIN')}
-                  className="w-full py-2.5 px-4 bg-[#2563EB] hover:bg-[#1E40AF] text-white font-semibold text-sm rounded-lg transition"
-                >
-                  Continue to Phone + Password Login
-                </button>
-              </div>
-            )}
-
-            {authMode === 'LOGIN' && (
-              <form onSubmit={handleCustomerLogin} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Registered Phone Number (E.164 Login ID)
-                  </label>
-                  <input
-                    type="text"
-                    value={loginPhone}
-                    onChange={(e) => setLoginPhone(e.target.value)}
-                    placeholder="+919876543210"
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Account Password
-                  </label>
-                  <input
-                    type="password"
-                    value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  className="w-full py-2.5 px-4 bg-[#2563EB] hover:bg-[#1E40AF] text-white font-semibold text-sm rounded-lg transition"
-                >
-                  Sign In with Phone & Password
-                </button>
-              </form>
-            )}
-
-            {(authMode === 'ACTIVATE_SHOWROOM_ACCOUNT' ||
-              authMode === 'ACTIVATE_FAMILY_INVITE') && (
-              <div className="space-y-4">
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setAuthMode('ACTIVATE_SHOWROOM_ACCOUNT')}
-                    className={`flex-1 py-1.5 text-xs rounded-md font-medium border ${
-                      authMode === 'ACTIVATE_SHOWROOM_ACCOUNT'
-                        ? 'bg-blue-50 border-blue-300 text-[#1E40AF]'
-                        : 'border-slate-200 text-slate-600'
-                    }`}
-                  >
-                    Showroom Owner OTP
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAuthMode('ACTIVATE_FAMILY_INVITE')}
-                    className={`flex-1 py-1.5 text-xs rounded-md font-medium border ${
-                      authMode === 'ACTIVATE_FAMILY_INVITE'
-                        ? 'bg-blue-50 border-blue-300 text-[#1E40AF]'
-                        : 'border-slate-200 text-slate-600'
-                    }`}
-                  >
-                    Family Invite Activation
-                  </button>
-                </div>
-
-                <form
-                  onSubmit={
-                    authMode === 'ACTIVATE_SHOWROOM_ACCOUNT'
-                      ? handleActivateShowroomAccount
-                      : handleActivateFamilyInvite
-                  }
-                  className="space-y-3"
-                >
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Phone Number (E.164)
-                    </label>
-                    <input
-                      type="text"
-                      value={loginPhone}
-                      onChange={(e) => setLoginPhone(e.target.value)}
-                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      6-Digit SMS OTP Code
-                    </label>
-                    <input
-                      type="text"
-                      maxLength={6}
-                      value={otpInput}
-                      onChange={(e) => setOtpInput(e.target.value)}
-                      className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
-                    />
-                  </div>
-                  {authMode === 'ACTIVATE_FAMILY_INVITE' && (
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Owner-Assigned Initial Password
-                      </label>
-                      <input
-                        type="password"
-                        value={initialInvitePassword}
-                        onChange={(e) => setInitialInvitePassword(e.target.value)}
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
-                      />
-                    </div>
-                  )}
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Set Your Private Strong Password
-                    </label>
-                    <input
-                      type="password"
-                      value={newPasswordInput}
-                      onChange={(e) => setNewPasswordInput(e.target.value)}
-                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
-                    />
-                    <p className="text-[11px] text-slate-500 mt-1">
-                      Min 8 chars, 1 uppercase, 1 lowercase, 1 number. Vehicle reg numbers forbidden.
-                    </p>
-                  </div>
-                  <button
-                    type="submit"
-                    className="w-full py-2.5 px-4 bg-[#059669] hover:bg-emerald-700 text-white font-semibold text-sm rounded-lg transition"
-                  >
-                    Verify OTP & Activate Account
-                  </button>
-                </form>
-              </div>
-            )}
-
-            {authMode === 'FORGOT_PASSWORD' && (
-              <form onSubmit={handlePasswordRecovery} className="space-y-3">
-                <p className="text-xs text-slate-600">
-                  Verify your registered E.164 phone number via 6-digit OTP to set a new password
-                  and revoke all prior sessions.
-                </p>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Registered Phone Number
-                  </label>
-                  <input
-                    type="text"
-                    value={loginPhone}
-                    onChange={(e) => setLoginPhone(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    6-Digit Recovery OTP
-                  </label>
-                  <input
-                    type="text"
-                    maxLength={6}
-                    value={otpInput}
-                    onChange={(e) => setOtpInput(e.target.value)}
-                    className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    New Strong Password
-                  </label>
-                  <input
-                    type="password"
-                    value={newPasswordInput}
-                    onChange={(e) => setNewPasswordInput(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  className="w-full py-2.5 px-4 bg-[#2563EB] hover:bg-[#1E40AF] text-white font-semibold text-sm rounded-lg transition"
-                >
-                  Reset Password & Revoke Old Sessions
-                </button>
-              </form>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const badgeColors = getFreshnessBadgeStyle(freshnessEvaluation.state);
-  const unreadNotifCount = notifications.filter(
-    (n) => n.status !== NOTIFICATION_STATUSES.READ
-  ).length;
-
-  const navigationItems: {
+  const screenTabs: Array<{
     id: MobileScreenId;
     label: string;
     icon: React.ComponentType<{ className?: string }>;
-    badge?: string | number;
-  }[] = [
-    { id: 'HOME_DASHBOARD', label: '1. Home Dashboard', icon: Shield },
-    { id: 'MY_VEHICLES', label: '2. My / Shared Vehicles', icon: Car, badge: vehicles.length },
-    { id: 'VEHICLE_DETAILS', label: '3. Vehicle & Showroom', icon: Cpu },
+  }> = [
+    { id: 'AUTH_ONBOARDING', label: '1. Auth & Onboarding', icon: KeyRound },
+    { id: 'DASHBOARD_HOME', label: '2. Safety Dashboard', icon: ShieldCheck },
     {
-      id: 'LIVE_TELEMETRY',
-      label: '4. Live STM32U575 Status',
-      icon: Activity,
-      badge: freshnessEvaluation.state
-    },
-    { id: 'EMERGENCY_SOS', label: '5. Emergency SOS Desk', icon: ShieldAlert },
-    {
-      id: 'INCIDENT_HISTORY',
-      label: '6. Incident History',
-      icon: AlertTriangle,
-      badge: incidents.length
+      id: 'VEHICLE_DETAILS_STATUS',
+      label: '3. Vehicle & STM32 Status',
+      icon: Cpu
     },
     {
-      id: 'FAMILY_MEMBERS',
-      label: '7. Family Invitations',
-      icon: Users,
-      badge: familyMembers.filter((f) => f.vehicleId === selectedVehicle.id).length
+      id: 'LIVE_LOCATION_FRESHNESS',
+      label: '4. Live GNSS & Freshness',
+      icon: MapPin
     },
-    { id: 'FAMILY_PERMISSIONS', label: '8. Family Permissions', icon: KeyRound },
-    { id: 'DRIVER_ACCESS', label: '9. Driver Profile & Shift', icon: UserCheck },
     {
-      id: 'NOTIFICATIONS',
-      label: '10. Notifications',
-      icon: Bell,
-      badge: unreadNotifCount > 0 ? unreadNotifCount : undefined
+      id: 'INCIDENT_HISTORY_TIMELINE',
+      label: '5. Incidents & Timeline',
+      icon: Activity
     },
-    { id: 'ACCOUNT_PRIVACY', label: '11. Account & Privacy', icon: Lock },
-    { id: 'HELP_SUPPORT', label: '12. Help & Support', icon: HelpCircle }
+    {
+      id: 'FAMILY_MEMBERS_PERMISSIONS',
+      label: '6. Family & Permissions',
+      icon: Users
+    },
+    {
+      id: 'DRIVER_ASSIGNMENT_ACCESS',
+      label: '7. Driver Assignment',
+      icon: UserCheck
+    },
+    {
+      id: 'EMERGENCY_CONTACTS',
+      label: '8. Emergency Contacts',
+      icon: HeartHandshake
+    },
+    {
+      id: 'MANUAL_SOS_SIMULATION',
+      label: '9. Manual SOS & Cancel',
+      icon: AlertOctagon
+    },
+    {
+      id: 'NOTIFICATIONS_CENTER',
+      label: '10. Notifications & ACK',
+      icon: Bell
+    },
+    {
+      id: 'PROFILE_PRIVACY_SETTINGS',
+      label: '11. Profile & Privacy',
+      icon: Lock
+    },
+    {
+      id: 'SUPPORT_HELP_TICKETS',
+      label: '12. Support & Help',
+      icon: HelpCircle
+    }
   ];
 
+  const unreadNotificationCount = notifications.filter(
+    (n) => n.status !== 'READ'
+  ).length;
+
   return (
-    <div className="min-h-screen bg-slate-50 text-[#0F172A] flex flex-col">
-      {/* Top Header Bar */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#1E40AF] flex items-center justify-center text-white shadow-sm">
-              <Shield className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-base font-bold text-slate-900">VeerXcape Mobile</h1>
-                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-[#1E40AF] border border-blue-200">
-                  {activeRole}
-                </span>
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+      <header className="sticky top-0 z-30 border-b border-slate-800 bg-slate-950/95 backdrop-blur px-4 py-3">
+        <div className="max-w-6xl mx-auto flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 rounded-xl bg-amber-500/15 border border-amber-500/40 flex items-center justify-center text-amber-400">
+                <Shield className="h-5 w-5" />
               </div>
-              <p className="text-xs text-slate-500">
-                Firebase Project: <span className="font-mono">{firebaseWebConfig.projectId}</span> ·
-                Native ID: <span className="font-mono">{VEERXCAPE_NATIVE_APP_METADATA.bundleId}</span>
-              </p>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-bold tracking-tight text-white">
+                    VeerXcape Mobile
+                  </span>
+                  <span className="text-[11px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                    {demoModeActive ? 'DEV DEMO MODE' : 'LIVE BACKEND'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400">
+                  {isAuthenticated && authenticatedUser
+                    ? `${authenticatedUser.fullName} (${authenticatedUser.phoneE164}) • Role: ${activePersona}`
+                    : 'Sign in or activate your showroom-linked account to access vehicle safety'}
+                </p>
+              </div>
             </div>
           </div>
 
-          {/* Active Vehicle + Role Switcher + Sign Out */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="flex items-center gap-1.5 bg-slate-100 px-2.5 py-1.5 rounded-lg border border-slate-200">
-              <Car className="w-4 h-4 text-[#1E40AF]" />
-              <select
-                aria-label="Select Active Vehicle"
-                value={selectedVehicleId}
-                onChange={(e) => setSelectedVehicleId(e.target.value)}
-                className="bg-transparent text-xs font-semibold text-slate-800 focus:outline-none"
-              >
-                {vehicles.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.registrationNumber} — {v.manufacturer} {v.model}
-                  </option>
-                ))}
-              </select>
-            </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {isAuthenticated && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void loadMobileDashboard()}
+                  disabled={isLoading}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs text-slate-200"
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin text-amber-400' : ''}`}
+                  />
+                  Sync
+                </button>
 
-            <div className="flex items-center gap-1.5 bg-slate-100 px-2.5 py-1.5 rounded-lg border border-slate-200">
-              <Users className="w-4 h-4 text-slate-600" />
-              <select
-                aria-label="Switch Mobile Role View"
-                value={activeRole}
-                onChange={(e) => setActiveRole(e.target.value as UserRoleCode)}
-                className="bg-transparent text-xs font-semibold text-slate-800 focus:outline-none"
-              >
-                {SUPPORTED_MOBILE_ROLES.map((r) => (
-                  <option key={r.role} value={r.role}>
-                    Role: {r.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+                {vehicles.length > 0 && (
+                  <select
+                    aria-label="Select Active Vehicle"
+                    value={selectedVehicle?.id ?? ''}
+                    onChange={(e) => setSelectedVehicleId(e.target.value)}
+                    className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100"
+                  >
+                    {vehicles.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.registrationNumber} — {v.manufacturer} {v.model}
+                      </option>
+                    ))}
+                  </select>
+                )}
 
-            <button
-              type="button"
-              onClick={() => setActiveScreen('EMERGENCY_SOS')}
-              className="px-3 py-1.5 rounded-lg bg-[#DC2626] hover:bg-red-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition"
-            >
-              <ShieldAlert className="w-3.5 h-3.5" />
-              SOS
-            </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveScreen('MANUAL_SOS_SIMULATION')}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold"
+                >
+                  <AlertOctagon className="h-3.5 w-3.5" />
+                  SOS Panel
+                </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                setIsAuthenticated(false);
-                setAuthMode('LOGIN');
-              }}
-              className="px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-xs font-medium text-slate-700 flex items-center gap-1"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              Sign Out
-            </button>
+                <button
+                  type="button"
+                  onClick={() => void handleLogout()}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs text-rose-300"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                  Logout
+                </button>
+              </>
+            )}
           </div>
         </div>
       </header>
 
-      {/* Feedback Banner */}
-      {bannerFeedback && (
-        <div className="bg-blue-50 border-b border-blue-200 px-4 py-2.5">
-          <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 text-xs text-[#1E40AF] font-medium">
-            <span>{bannerFeedback}</span>
+      {/* Banners */}
+      <div className="max-w-6xl w-full mx-auto px-4 pt-3 space-y-2">
+        {isOfflineError && (
+          <div
+            role="alert"
+            className="rounded-xl bg-amber-500/15 border border-amber-500/40 px-4 py-2.5 text-xs text-amber-200 flex items-center justify-between"
+          >
+            <div className="flex items-center gap-2">
+              <WifiOff className="h-4 w-4 text-amber-400" />
+              <span>
+                Network connection issue or backend timeout detected. Cached
+                safety state is shown until connectivity returns.
+              </span>
+            </div>
             <button
               type="button"
-              onClick={() => setBannerFeedback(null)}
-              className="text-blue-700 underline font-semibold"
+              onClick={() => void loadMobileDashboard()}
+              className="px-2.5 py-1 rounded bg-amber-500 text-slate-950 font-semibold"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        {globalErrorBanner && (
+          <div
+            role="alert"
+            className="rounded-xl bg-rose-500/15 border border-rose-500/40 px-4 py-2.5 text-xs text-rose-200 flex items-center justify-between"
+          >
+            <span>{globalErrorBanner}</span>
+            <button
+              type="button"
+              onClick={() => setGlobalErrorBanner(null)}
+              className="underline"
             >
               Dismiss
             </button>
           </div>
-        </div>
-      )}
+        )}
+        {globalSuccessBanner && (
+          <div className="rounded-xl bg-emerald-500/15 border border-emerald-500/40 px-4 py-2.5 text-xs text-emerald-200 flex items-center justify-between">
+            <span>{globalSuccessBanner}</span>
+            <button
+              type="button"
+              onClick={() => setGlobalSuccessBanner(null)}
+              className="underline"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+      </div>
 
-      {/* Main Content Layout */}
-      <div className="max-w-7xl w-full mx-auto flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 p-4 md:p-6">
-        {/* Left Navigation Drawer */}
-        <aside className="lg:col-span-3 space-y-4">
-          <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-2 mb-2">
-              Mobile Screens (15 Flows)
-            </div>
-            <nav className="space-y-1">
-              {navigationItems.map((item) => {
-                const IconComponent = item.icon;
-                const isActive = activeScreen === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setActiveScreen(item.id)}
-                    className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition ${
-                      isActive
-                        ? 'bg-blue-50 text-[#1E40AF] font-semibold border border-blue-200'
-                        : 'text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    <span className="flex items-center gap-2.5">
-                      <IconComponent className="w-4 h-4 shrink-0" />
-                      <span>{item.label}</span>
-                    </span>
-                    {item.badge !== undefined && (
-                      <span
-                        className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
-                          item.id === 'LIVE_TELEMETRY'
-                            ? `${badgeColors.bg} ${badgeColors.text}`
-                            : 'bg-slate-100 text-slate-700'
-                        }`}
-                      >
-                        {item.badge}
+      {isAuthenticated && (
+        <nav className="border-b border-slate-800 bg-slate-900/70 px-4 py-2 overflow-x-auto mt-2">
+          <div className="max-w-6xl mx-auto flex items-center gap-1.5 min-w-max">
+            {screenTabs.map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeScreen === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveScreen(tab.id)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                    isActive
+                      ? 'bg-amber-500 text-slate-950 font-semibold'
+                      : 'bg-slate-900/90 text-slate-300 hover:bg-slate-800 border border-slate-800'
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  <span>{tab.label}</span>
+                  {tab.id === 'NOTIFICATIONS_CENTER' &&
+                    unreadNotificationCount > 0 && (
+                      <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-rose-600 text-white">
+                        {unreadNotificationCount}
                       </span>
                     )}
-                  </button>
-                );
-              })}
-            </nav>
+                </button>
+              );
+            })}
           </div>
+        </nav>
+      )}
 
-          {/* Location Freshness Contract Card */}
-          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-2.5">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-800">Telemetry Freshness Gate</span>
-              <span
-                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold border ${badgeColors.bg} ${badgeColors.text} ${badgeColors.border}`}
-              >
-                <span className={`w-2 h-2 rounded-full ${badgeColors.dot}`} />
-                {freshnessEvaluation.state}
-              </span>
-            </div>
-            <p className="text-xs text-slate-600 leading-relaxed">
-              {freshnessEvaluation.displayLabel}
-            </p>
-            <div className="pt-2 border-t border-slate-100 flex flex-wrap gap-1.5">
-              <button
-                type="button"
-                onClick={() => updateVehicleFreshnessSimulation(12, 15)}
-                className="text-[11px] px-2 py-1 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 font-medium"
-              >
-                Set LIVE (12s)
-              </button>
-              <button
-                type="button"
-                onClick={() => updateVehicleFreshnessSimulation(180, 45)}
-                className="text-[11px] px-2 py-1 rounded bg-blue-50 text-blue-800 border border-blue-200 font-medium"
-              >
-                Set RECENT (3m)
-              </button>
-              <button
-                type="button"
-                onClick={() => updateVehicleFreshnessSimulation(420, 120)}
-                className="text-[11px] px-2 py-1 rounded bg-amber-50 text-amber-800 border border-amber-200 font-medium"
-              >
-                Set STALE (7m)
-              </button>
-              <button
-                type="button"
-                onClick={() => updateVehicleFreshnessSimulation(900, 750)}
-                className="text-[11px] px-2 py-1 rounded bg-slate-100 text-slate-700 border border-slate-300 font-medium"
-              >
-                Set OFFLINE (15m)
-              </button>
-            </div>
-          </div>
-        </aside>
-
-        {/* Right Screen Viewport */}
-        <main className="lg:col-span-9 space-y-6">
-          {/* ================================================================
-              SCREEN 4: ROLE-AWARE HOME DASHBOARD
-          ================================================================ */}
-          {activeScreen === 'HOME_DASHBOARD' && (
-            <div className="space-y-6">
-              {/* Role Context Banner */}
-              <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold uppercase tracking-wider text-[#1E40AF]">
-                      {SUPPORTED_MOBILE_ROLES.find((r) => r.role === activeRole)?.badge}
-                    </span>
-                    <span className="text-slate-300">•</span>
-                    <span className="text-xs font-mono text-slate-600">
-                      {selectedVehicle.registrationNumber}
-                    </span>
-                  </div>
-                  <h2 className="text-lg font-bold text-slate-900">
-                    {selectedVehicle.manufacturer} {selectedVehicle.model} ({selectedVehicle.variant})
-                  </h2>
-                  <p className="text-xs text-slate-600">
-                    {SUPPORTED_MOBILE_ROLES.find((r) => r.role === activeRole)?.summary}
-                  </p>
-                </div>
-
-                {/* Standardized Freshness Badge */}
-                <div
-                  className={`p-3 rounded-xl border ${badgeColors.bg} ${badgeColors.border} min-w-[230px]`}
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className={`text-xs font-bold ${badgeColors.text}`}>
-                      Status: {freshnessEvaluation.state}
-                    </span>
-                    <span className={`w-2.5 h-2.5 rounded-full ${badgeColors.dot}`} />
-                  </div>
-                  <p className={`text-[11px] font-medium ${badgeColors.text}`}>
-                    {freshnessEvaluation.displayLabel}
-                  </p>
-                  {!freshnessEvaluation.isLive && (
-                    <p className="text-[10px] text-slate-600 mt-1 font-semibold">
-                      WARNING: Coordinates are historical ({freshnessEvaluation.state}) — not live.
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              {/* Family Permission Enforcement Notice if viewing as FAMILY_MEMBER */}
-              {activeRole === USER_ROLES.FAMILY_MEMBER && (
-                <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-xs text-slate-800 space-y-2">
-                  <div className="font-bold text-[#1E40AF]">
-                    Viewing as Authorised Family Member: {activeFamilyMemberRecord.fullName} (
-                    {activeFamilyMemberRecord.relationship})
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <span
-                      className={`px-2 py-0.5 rounded font-semibold ${
-                        activeFamilyMemberRecord.permissions.canViewLocation
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : 'bg-red-100 text-red-800'
-                      }`}
-                    >
-                      Location: {activeFamilyMemberRecord.permissions.canViewLocation ? 'ALLOWED' : 'DENIED'}
-                    </span>
-                    <span
-                      className={`px-2 py-0.5 rounded font-semibold ${
-                        activeFamilyMemberRecord.permissions.canViewTelemetry
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : 'bg-red-100 text-red-800'
-                      }`}
-                    >
-                      Telemetry: {activeFamilyMemberRecord.permissions.canViewTelemetry ? 'ALLOWED' : 'DENIED'}
-                    </span>
-                    <span
-                      className={`px-2 py-0.5 rounded font-semibold ${
-                        activeFamilyMemberRecord.permissions.canTriggerSos
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : 'bg-red-100 text-red-800'
-                      }`}
-                    >
-                      Trigger SOS: {activeFamilyMemberRecord.permissions.canTriggerSos ? 'ALLOWED' : 'DENIED'}
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {/* Primary Telemetry & Safety Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {/* Location Card */}
-                <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-2">
-                  <div className="flex items-center justify-between text-xs font-semibold text-slate-500">
-                    <span>GNSS Coordinates ({freshnessEvaluation.state})</span>
-                    <MapPin className="w-4 h-4 text-[#2563EB]" />
-                  </div>
-                  {activeRole === USER_ROLES.FAMILY_MEMBER &&
-                  !activeFamilyMemberRecord.permissions.canViewLocation ? (
-                    <div className="py-3 text-xs text-red-700 font-medium">
-                      Location visibility restricted by Vehicle Owner.
-                    </div>
-                  ) : (
-                    <>
-                      <div className="text-sm font-bold text-slate-900">
-                        {selectedVehicle.roadSegmentSummary}
-                      </div>
-                      <div className="text-xs font-mono text-slate-600">
-                        {selectedVehicle.lat.toFixed(4)}° N, {selectedVehicle.lng.toFixed(4)}° E ·{' '}
-                        {selectedVehicle.speedKmh} km/h
-                      </div>
-                      <div className="text-[11px] text-slate-500">
-                        Jurisdiction: <span className="font-semibold">{selectedVehicle.jurisdictionCode}</span>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                {/* STM32U575 Cabin Environment Card */}
-                <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-2">
-                  <div className="flex items-center justify-between text-xs font-semibold text-slate-500">
-                    <span>Cabin Safety & Sensors</span>
-                    <Thermometer className="w-4 h-4 text-[#2563EB]" />
-                  </div>
-                  {activeRole === USER_ROLES.FAMILY_MEMBER &&
-                  !activeFamilyMemberRecord.permissions.canViewTelemetry ? (
-                    <div className="py-3 text-xs text-red-700 font-medium">
-                      Sensor telemetry restricted by Vehicle Owner.
-                    </div>
-                  ) : (
-                    <>
-                      <div className="text-sm font-bold text-slate-900">
-                        {selectedVehicle.cabinTempCelsius}°C · CO: {selectedVehicle.coPpm} ppm
-                      </div>
-                      <div className="text-xs text-slate-600">
-                        Occupant Radar:{' '}
-                        <span className="font-semibold">
-                          {selectedVehicle.occupantDetected ? 'Occupant Present' : 'Unoccupied'}
-                        </span>
-                      </div>
-                      <div className="text-[11px] text-emerald-700 font-medium">
-                        Peak Impact: {selectedVehicle.peakImpactG}G (Normal) · Smoke: Clear
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                {/* Power & Hardware Link Card */}
-                <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-2">
-                  <div className="flex items-center justify-between text-xs font-semibold text-slate-500">
-                    <span>STM32U575 Hardware Health</span>
-                    <BatteryCharging className="w-4 h-4 text-emerald-600" />
-                  </div>
-                  <div className="text-sm font-bold text-slate-900 font-mono">
-                    {selectedVehicle.assignedDeviceSerial}
-                  </div>
-                  <div className="text-xs text-slate-600">
-                    Power: {selectedVehicle.powerSource} ({(selectedVehicle.mainVoltageMv / 1000).toFixed(2)}V) · Backup: {selectedVehicle.backupBatteryPercent}%
-                  </div>
-                  <div className="text-[11px] text-slate-500">
-                    Firmware: {selectedVehicle.firmwareVersion} · RSSI: {selectedVehicle.cellularRssiDbm} dBm
-                  </div>
-                </div>
-              </div>
-
-              {/* Quick Action Tiles */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setActiveScreen('EMERGENCY_SOS')}
-                  className="p-4 rounded-xl bg-red-50 hover:bg-red-100/80 border border-red-200 text-left transition"
-                >
-                  <div className="text-xs font-bold text-[#DC2626] flex items-center gap-1.5">
-                    <ShieldAlert className="w-4 h-4" />
-                    Trigger Emergency SOS
-                  </div>
-                  <p className="text-[11px] text-red-900/80 mt-1">
-                    5-second safety countdown with authority & family dispatch routing
-                  </p>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setActiveScreen('LIVE_TELEMETRY')}
-                  className="p-4 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-left transition"
-                >
-                  <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                    <Activity className="w-4 h-4 text-[#2563EB]" />
-                    STM32U575 Live Telemetry
-                  </div>
-                  <p className="text-[11px] text-slate-600 mt-1">
-                    Inspect IMU, GNSS, cabin radar, and test hardware event packets
-                  </p>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setActiveScreen('FAMILY_PERMISSIONS')}
-                  className="p-4 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-left transition"
-                >
-                  <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                    <KeyRound className="w-4 h-4 text-[#2563EB]" />
-                    Family Access Matrix
-                  </div>
-                  <p className="text-[11px] text-slate-600 mt-1">
-                    Granular per-member location, telemetry & SOS toggles
-                  </p>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setActiveScreen('INCIDENT_HISTORY')}
-                  className="p-4 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-left transition"
-                >
-                  <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                    <AlertTriangle className="w-4 h-4 text-amber-600" />
-                    Incident Timeline ({incidents.length})
-                  </div>
-                  <p className="text-[11px] text-slate-600 mt-1">
-                    Track authority acknowledgement, dispatch & false-alarm cancel
-                  </p>
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* ================================================================
-              SCREEN 5: MY VEHICLES / SHARED VEHICLES
-          ================================================================ */}
-          {activeScreen === 'MY_VEHICLES' && (
-            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="text-base font-bold text-slate-900">
-                    My Registered & Shared Vehicles
-                  </h2>
-                  <p className="text-xs text-slate-500">
-                    Vehicles are registered by authorized OEM showrooms and bound via deterministic
-                    locks (_uniqueLocks).
-                  </p>
-                </div>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {vehicles.map((v) => {
-                  const isSelected = v.id === selectedVehicle.id;
-                  const evalState = computeLocationFreshness({
-                    lastLocationRecordedAt: new Date(
-                      Date.now() - v.lastLocationUpdateSecondsAgo * 1000
-                    ).toISOString(),
-                    lastHeartbeatAt: new Date(
-                      Date.now() - v.lastHeartbeatSecondsAgo * 1000
-                    ).toISOString()
-                  });
-                  const style = getFreshnessBadgeStyle(evalState.state);
-                  return (
-                    <div
-                      key={v.id}
-                      className={`p-4 rounded-xl border transition ${
-                        isSelected
-                          ? 'border-[#2563EB] bg-blue-50/30'
-                          : 'border-slate-200 bg-white'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-mono text-sm font-bold text-slate-900">
-                          {v.registrationNumber}
-                        </span>
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${style.bg} ${style.text} ${style.border}`}
-                        >
-                          {evalState.state}
-                        </span>
-                      </div>
-                      <div className="text-sm font-semibold text-slate-800">
-                        {v.manufacturer} {v.model} · {v.variant}
-                      </div>
-                      <div className="text-xs text-slate-500 mt-1">
-                        VIN: <span className="font-mono">{v.vin}</span>
-                      </div>
-                      <div className="text-xs text-slate-500">
-                        STM32U575 Unit: <span className="font-mono">{v.assignedDeviceSerial}</span>
-                      </div>
-                      <div className="text-xs text-slate-500 mt-1">
-                        Showroom: {v.registeredByShowroomName}
-                      </div>
-                      <div className="mt-3 pt-3 border-t border-slate-200 flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setSelectedVehicleId(v.id)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
-                            isSelected
-                              ? 'bg-[#1E40AF] text-white'
-                              : 'bg-slate-100 text-slate-800 hover:bg-slate-200'
-                          }`}
-                        >
-                          {isSelected ? 'Active Vehicle' : 'Switch to Vehicle'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedVehicleId(v.id);
-                            setActiveScreen('VEHICLE_DETAILS');
-                          }}
-                          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-300 text-slate-700 hover:bg-slate-50"
-                        >
-                          Inspect Provenance
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* ================================================================
-              SCREEN 6: VEHICLE DETAILS & SHOWROOM PROVENANCE
-          ================================================================ */}
-          {activeScreen === 'VEHICLE_DETAILS' && (
-            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-5">
+      <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-6">
+        {(!isAuthenticated || activeScreen === 'AUTH_ONBOARDING') && (
+          <section className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
               <div>
-                <h2 className="text-base font-bold text-slate-900">
-                  Vehicle Specifications & Showroom Provenance ({selectedVehicle.registrationNumber})
-                </h2>
-                <p className="text-xs text-slate-500">
-                  Immutable registration record created by authorized dealership staff.
-                </p>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-                <div className="p-4 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
-                  <div className="font-bold text-slate-800 uppercase tracking-wider">
-                    Vehicle Identity
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Registration Number:</span>
-                    <span className="font-mono font-bold">{selectedVehicle.registrationNumber}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">17-Char VIN:</span>
-                    <span className="font-mono font-semibold">{selectedVehicle.vin}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Make / Model / Variant:</span>
-                    <span className="font-semibold">
-                      {selectedVehicle.manufacturer} {selectedVehicle.model} ({selectedVehicle.variant})
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Fuel / Powertrain:</span>
-                    <span className="font-semibold">{selectedVehicle.fuelType}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Color & Year:</span>
-                    <span className="font-semibold">
-                      {selectedVehicle.color} · {selectedVehicle.manufacturingYear}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="p-4 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
-                  <div className="font-bold text-slate-800 uppercase tracking-wider">
-                    Showroom & Hardware Binding
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Originating Showroom:</span>
-                    <span className="font-semibold text-right">
-                      {selectedVehicle.registeredByShowroomName}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Dealer Code:</span>
-                    <span className="font-mono font-semibold">
-                      {selectedVehicle.registeredByDealerCode}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">STM32U575 Serial:</span>
-                    <span className="font-mono font-bold text-[#1E40AF]">
-                      {selectedVehicle.assignedDeviceSerial}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">MCU Firmware:</span>
-                    <span className="font-mono">{selectedVehicle.firmwareVersion}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Uniqueness Lock Key:</span>
-                    <span className="font-mono text-[11px]">
-                      reg_{selectedVehicle.registrationNumber}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ================================================================
-              SCREEN 12: LIVE STM32U575 TELEMETRY & HARDWARE SIMULATOR
-          ================================================================ */}
-          {activeScreen === 'LIVE_TELEMETRY' && (
-            <div className="space-y-5">
-              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <h2 className="text-base font-bold text-slate-900">
-                      STM32U575 Live Telemetry & Sensor Bus ({selectedVehicle.assignedDeviceSerial})
-                    </h2>
-                    <p className="text-xs text-slate-500">
-                      Authenticated via HMAC-SHA256 per-device secret & monotonic sequence window.
-                    </p>
-                  </div>
-                  <span
-                    className={`px-3 py-1 rounded-full text-xs font-bold border ${badgeColors.bg} ${badgeColors.text} ${badgeColors.border}`}
-                  >
-                    {freshnessEvaluation.displayLabel}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                  <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200">
-                    <div className="text-slate-500">Ignition & Doors</div>
-                    <div className="text-sm font-bold text-slate-900 mt-1">
-                      {selectedVehicle.ignitionOn ? 'IGNITION ON' : 'IGNITION OFF'}
-                    </div>
-                    <div className="text-[11px] text-slate-600 mt-0.5">
-                      Doors: {selectedVehicle.doorsLocked ? 'Locked' : 'Unlocked'} · Windows:{' '}
-                      {selectedVehicle.windowsClosed ? 'Closed' : 'Open'}
-                    </div>
-                  </div>
-
-                  <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200">
-                    <div className="text-slate-500">Cabin Temperature & CO</div>
-                    <div className="text-sm font-bold text-slate-900 mt-1">
-                      {selectedVehicle.cabinTempCelsius} °C · {selectedVehicle.coPpm} ppm CO
-                    </div>
-                    <div className="text-[11px] text-slate-600 mt-0.5">
-                      Occupant Radar: {selectedVehicle.occupantDetected ? 'Detected' : 'Clear'}
-                    </div>
-                  </div>
-
-                  <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200">
-                    <div className="text-slate-500">IMU Accelerometer</div>
-                    <div className="text-sm font-bold text-slate-900 mt-1">
-                      Peak {selectedVehicle.peakImpactG} G
-                    </div>
-                    <div className="text-[11px] text-slate-600 mt-0.5">
-                      GNSS Fix: {selectedVehicle.gnssFixStatus}
-                    </div>
-                  </div>
-
-                  <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200">
-                    <div className="text-slate-500">12V Rail & LiFePO4 Backup</div>
-                    <div className="text-sm font-bold text-slate-900 mt-1">
-                      {(selectedVehicle.mainVoltageMv / 1000).toFixed(2)}V ({selectedVehicle.powerSource})
-                    </div>
-                    <div className="text-[11px] text-slate-600 mt-0.5">
-                      Backup Battery: {selectedVehicle.backupBatteryPercent}%
-                    </div>
-                  </div>
-                </div>
-
-                {/* Non-Production STM32U575 Event Simulator */}
-                <div className="pt-4 border-t border-slate-200 space-y-3">
-                  <div className="text-xs font-bold text-slate-800">
-                    Non-Production STM32U575 Hardware Event Trigger (HMAC-SHA256 Signed Packet Simulator)
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => simulateHardwareEvent(INCIDENT_TYPES.ACCIDENT_DETECTED)}
-                      className="px-3 py-2 rounded-lg bg-red-50 hover:bg-red-100 text-[#DC2626] border border-red-200 text-xs font-semibold"
-                    >
-                      Simulate High-G Crash (ACCIDENT_DETECTED)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => simulateHardwareEvent(INCIDENT_TYPES.PARKED_OCCUPANT_ALERT)}
-                      className="px-3 py-2 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-semibold"
-                    >
-                      Simulate Parked Child/Pet Radar Alert
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => simulateHardwareEvent(INCIDENT_TYPES.THEFT_OR_INTRUSION_ALERT)}
-                      className="px-3 py-2 rounded-lg bg-blue-50 hover:bg-blue-100 text-[#1E40AF] border border-blue-200 text-xs font-semibold"
-                    >
-                      Simulate Unauthorized Intrusion Alert
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => simulateHardwareEvent(INCIDENT_TYPES.DEVICE_POWER_FAILURE)}
-                      className="px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-xs font-semibold"
-                    >
-                      Simulate 12V Cutover to Backup Battery
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ================================================================
-              SCREEN 10: EMERGENCY / SOS INTERFACE
-          ================================================================ */}
-          {activeScreen === 'EMERGENCY_SOS' && (
-            <div className="bg-white border-2 border-red-200 rounded-xl p-6 shadow-sm space-y-5">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <span className="inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-red-100 text-[#DC2626] mb-1">
-                    MANUAL USER-TRIGGERED SOS DESK
-                  </span>
-                  <h2 className="text-lg font-bold text-slate-900">
-                    Emergency SOS Dispatch & Family Alert ({selectedVehicle.registrationNumber})
-                  </h2>
-                  <p className="text-xs text-slate-600 mt-1">
-                    Explicitly distinct from automated STM32U575 crash detection. Includes a
-                    5-second cancellation window to prevent accidental dispatch.
-                  </p>
-                </div>
+                <span className="text-xs font-semibold uppercase tracking-wider text-amber-400">
+                  Zero-Knowledge Showroom Onboarding & Auth
+                </span>
+                <h1 className="text-xl font-bold text-white mt-1">
+                  Account Activation, Login & Family Invite Verification
+                </h1>
               </div>
 
-              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-1.5">
-                <div className="font-semibold text-slate-800">
-                  Target Jurisdiction: {selectedVehicle.jurisdictionCode} · Coordinates:{' '}
-                  {selectedVehicle.lat.toFixed(4)}° N, {selectedVehicle.lng.toFixed(4)}° E
-                </div>
-                <div className="text-slate-600">
-                  Location Freshness: <span className="font-bold">{freshnessEvaluation.displayLabel}</span>
-                </div>
-                <div className="text-slate-500">
-                  Truthful Lifecycle Policy: Creating an SOS marks the incident as{' '}
-                  <span className="font-mono font-semibold">VISIBLE_TO_AUTHORITY</span>. It will
-                  never be shown as &ldquo;Ambulance/Police Dispatched&rdquo; until an authority
-                  officer explicitly records{' '}
-                  <span className="font-mono font-semibold">DISPATCH_RECORDED_BY_AUTHORITY</span>.
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Emergency Situation Note (Shared with Medical & Police Desk)
-                </label>
-                <textarea
-                  rows={2}
-                  value={sosNote}
-                  onChange={(e) => setSosNote(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-              </div>
-
-              {sosCountdown !== null ? (
-                <div className="p-5 rounded-xl bg-red-50 border-2 border-[#DC2626] text-center space-y-3">
-                  <div className="text-sm font-bold text-[#DC2626]">
-                    TRANSMITTING MANUAL SOS IN {sosCountdown} SECONDS...
-                  </div>
-                  <p className="text-xs text-red-900">
-                    Notifying {selectedVehicle.jurisdictionCode} Medical & Police Authorities and
-                    authorized family members.
-                  </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {(
+                  [
+                    { id: 'LOGIN', label: 'Phone Login' },
+                    { id: 'OWNER_ACTIVATION', label: 'Owner Activation' },
+                    { id: 'FAMILY_INVITE_ACCEPT', label: 'Family Invite' },
+                    { id: 'PASSWORD_RESET', label: 'Password Reset' }
+                  ] as const
+                ).map((t) => (
                   <button
+                    key={t.id}
                     type="button"
                     onClick={() => {
-                      setSosCountdown(null);
-                      setBannerFeedback('Manual SOS countdown cancelled before transmission.');
+                      setAuthTab(t.id);
+                      setAuthStatusBanner(null);
+                      setAuthErrorBanner(null);
                     }}
-                    className="px-5 py-2.5 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-800"
+                    className={`px-3 py-2 rounded-xl text-xs font-semibold border transition ${
+                      authTab === t.id
+                        ? 'bg-amber-500/20 border-amber-400 text-amber-200'
+                        : 'bg-slate-950 border-slate-800 text-slate-400'
+                    }`}
                   >
-                    CANCEL SOS NOW (Accidental Press)
+                    {t.label}
                   </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  disabled={
-                    activeRole === USER_ROLES.FAMILY_MEMBER &&
-                    !activeFamilyMemberRecord.permissions.canTriggerSos
-                  }
-                  onClick={() => setSosCountdown(5)}
-                  className="w-full py-4 rounded-xl bg-[#DC2626] hover:bg-red-700 disabled:bg-slate-300 text-white font-bold text-sm shadow-sm transition"
-                >
-                  {activeRole === USER_ROLES.FAMILY_MEMBER &&
-                  !activeFamilyMemberRecord.permissions.canTriggerSos
-                    ? 'SOS Trigger Disabled by Vehicle Owner Permission'
-                    : 'START 5-SECOND EMERGENCY SOS COUNTDOWN'}
-                </button>
-              )}
-            </div>
-          )}
-
-          {/* ================================================================
-              SCREEN 11: INCIDENT HISTORY
-          ================================================================ */}
-          {activeScreen === 'INCIDENT_HISTORY' && (
-            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4">
-              <div>
-                <h2 className="text-base font-bold text-slate-900">
-                  Vehicle Incident & Emergency Lifecycle Log
-                </h2>
-                <p className="text-xs text-slate-500">
-                  Separates Hardware-Detected Incidents vs Manual User SOS, and distinguishes
-                  Authority Visibility from Confirmed Dispatch.
-                </p>
+                ))}
               </div>
 
+              <form onSubmit={handleAuthSubmit} className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label
+                      htmlFor="mobile-auth-phone"
+                      className="block text-xs font-medium text-slate-300 mb-1"
+                    >
+                      Registered Phone (E.164)
+                    </label>
+                    <input
+                      id="mobile-auth-phone"
+                      type="text"
+                      value={authPhone}
+                      onChange={(e) => setAuthPhone(e.target.value)}
+                      placeholder="+919876543210"
+                      className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-sm text-white"
+                    />
+                  </div>
+
+                  {authTab !== 'LOGIN' && (
+                    <div>
+                      <label
+                        htmlFor="mobile-auth-otp"
+                        className="block text-xs font-medium text-slate-300 mb-1"
+                      >
+                        6-Digit Verification OTP
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          id="mobile-auth-otp"
+                          type="text"
+                          maxLength={6}
+                          value={authOtpCode}
+                          onChange={(e) => setAuthOtpCode(e.target.value)}
+                          placeholder="6-digit OTP"
+                          className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-sm text-white font-mono"
+                        />
+                        <button
+                          type="button"
+                          disabled={isLoading}
+                          onClick={() => void handleRequestOtp()}
+                          className="shrink-0 px-3 py-2 rounded-xl bg-slate-800 text-xs font-semibold text-amber-300 border border-slate-700"
+                        >
+                          Send OTP
+                        </button>
+                      </div>
+                      {authDevOtpHint && (
+                        <p className="text-[11px] text-amber-300 mt-1 font-mono">
+                          Dev OTP Code: {authDevOtpHint}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {authTab === 'FAMILY_INVITE_ACCEPT' && (
+                  <div>
+                    <label
+                      htmlFor="mobile-auth-init-pwd"
+                      className="block text-xs font-medium text-slate-300 mb-1"
+                    >
+                      Temporary Initial Invite Password (Shared by Vehicle
+                      Owner)
+                    </label>
+                    <input
+                      id="mobile-auth-init-pwd"
+                      type="password"
+                      value={authInitialInvitePassword}
+                      onChange={(e) =>
+                        setAuthInitialInvitePassword(e.target.value)
+                      }
+                      className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-sm text-white"
+                    />
+                  </div>
+                )}
+
+                <div>
+                  <label
+                    htmlFor="mobile-auth-password"
+                    className="block text-xs font-medium text-slate-300 mb-1"
+                  >
+                    {authTab === 'LOGIN'
+                      ? 'Account Password'
+                      : 'Create Permanent Password (Never shared with showroom)'}
+                  </label>
+                  <input
+                    id="mobile-auth-password"
+                    type="password"
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    placeholder="Minimum 8 chars, mixed case + number"
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-sm text-white"
+                  />
+                </div>
+
+                {authErrorBanner && (
+                  <div
+                    role="alert"
+                    className="rounded-xl bg-rose-500/10 border border-rose-500/30 p-3 text-xs text-rose-200 flex items-center gap-2"
+                  >
+                    <XCircle className="h-4 w-4 text-rose-400 shrink-0" />
+                    <span>{authErrorBanner}</span>
+                  </div>
+                )}
+
+                {authStatusBanner && (
+                  <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 p-3 text-xs text-emerald-200 flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+                    <span>{authStatusBanner}</span>
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center gap-3 pt-2">
+                  <button
+                    type="submit"
+                    disabled={isLoading}
+                    className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold text-sm"
+                  >
+                    {isLoading
+                      ? 'Connecting...'
+                      : authTab === 'LOGIN'
+                        ? 'Sign In'
+                        : authTab === 'OWNER_ACTIVATION'
+                          ? 'Verify OTP & Activate Owner Account'
+                          : authTab === 'FAMILY_INVITE_ACCEPT'
+                            ? 'Activate Family Membership'
+                            : 'Verify OTP & Reset Password'}
+                  </button>
+
+                  {DEV_DEMO_ENABLED && !demoModeActive && (
+                    <button
+                      type="button"
+                      onClick={activateExplicitDevDemo}
+                      className="px-4 py-2.5 rounded-xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-xs font-semibold"
+                    >
+                      Load Explicit Dev Demo
+                    </button>
+                  )}
+                </div>
+              </form>
+            </div>
+
+            <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <ShieldCheck className="h-5 w-5 text-emerald-400" />
+                Zero-Knowledge Onboarding
+              </h2>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Authorized showrooms register your vehicle and verify your phone
+                via OTP, but never create or view your permanent password.
+              </p>
+            </div>
+          </section>
+        )}
+
+        {isAuthenticated && activeScreen === 'DASHBOARD_HOME' && (
+          <section className="space-y-6">
+            {!selectedVehicle ? (
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center space-y-3">
+                <Car className="h-10 w-10 text-amber-400 mx-auto" />
+                <h2 className="text-lg font-bold text-white">
+                  No Vehicles Linked Yet
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Once an authorized showroom registers your vehicle or a
+                  vehicle owner shares a family invite, it will appear here.
+                </p>
+              </div>
+            ) : (
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
+                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                  <div>
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                      {selectedVehicle.registrationNumber}
+                    </span>
+                    <h1 className="text-2xl font-bold text-white mt-1">
+                      {selectedVehicle.manufacturer} {selectedVehicle.model} —{' '}
+                      {selectedVehicle.variant}
+                    </h1>
+                    <p className="text-xs text-slate-400">
+                      Showroom: {selectedVehicle.registeredByShowroomName} (
+                      {selectedVehicle.registeredByDealerCode}) • STM32:{' '}
+                      {selectedVehicle.assignedDeviceSerial}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setActiveScreen('VEHICLE_DETAILS_STATUS')}
+                      className="px-3.5 py-2 rounded-xl bg-slate-800 text-xs font-semibold text-slate-100"
+                    >
+                      STM32 Diagnostics
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveScreen('MANUAL_SOS_SIMULATION')}
+                      className="px-4 py-2 rounded-xl bg-rose-600 text-xs font-bold text-white"
+                    >
+                      Trigger Emergency SOS
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>Battery Rail</span>
+                      <BatteryCharging className="h-4 w-4 text-emerald-400" />
+                    </div>
+                    <p className="text-lg font-bold text-white mt-1">
+                      {(selectedVehicle.mainVoltageMv / 1000).toFixed(2)} V
+                    </p>
+                    <p className="text-[11px] text-slate-400">
+                      Telemetry Frames: {telemetryHistoryCount}
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>GSM / GNSS</span>
+                      <Signal className="h-4 w-4 text-sky-400" />
+                    </div>
+                    <p className="text-lg font-bold text-white mt-1">
+                      {selectedVehicle.cellularRssiDbm} dBm
+                    </p>
+                    <p className="text-[11px] text-slate-400">
+                      Fix: {selectedVehicle.gnssFixStatus}
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>Speed</span>
+                      <Navigation className="h-4 w-4 text-amber-400" />
+                    </div>
+                    <p className="text-lg font-bold text-white mt-1">
+                      {selectedVehicle.speedKmh} km/h
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>Freshness</span>
+                      <Clock className="h-4 w-4 text-emerald-400" />
+                    </div>
+                    <p className="text-sm font-bold text-white mt-1">
+                      {selectedVehicle.lastLocationUpdateSecondsAgo}s ago
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {isAuthenticated && activeScreen === 'VEHICLE_DETAILS_STATUS' && (
+          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+            <h1 className="text-xl font-bold text-white">
+              Vehicle & STM32U575 Hardware Status
+            </h1>
+            {selectedVehicle ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                  <span className="text-slate-400 block">
+                    Registration & VIN
+                  </span>
+                  <strong className="text-white font-mono">
+                    {selectedVehicle.registrationNumber} • {selectedVehicle.vin}
+                  </strong>
+                </div>
+                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                  <span className="text-slate-400 block">
+                    STM32U575 Serial & Firmware
+                  </span>
+                  <strong className="text-amber-300 font-mono">
+                    {selectedVehicle.assignedDeviceSerial} •{' '}
+                    {selectedVehicle.firmwareVersion}
+                  </strong>
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-400">No vehicle selected.</p>
+            )}
+          </section>
+        )}
+
+        {isAuthenticated && activeScreen === 'LIVE_LOCATION_FRESHNESS' && (
+          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+            <h1 className="text-xl font-bold text-white">
+              Live GNSS Coordinates & Freshness
+            </h1>
+            {!selectedVehicle ? (
+              <p className="text-xs text-slate-400">No vehicle selected.</p>
+            ) : !canViewLiveLocation ? (
+              <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-200">
+                Live location viewing is disabled for your family membership by
+                the vehicle owner.
+              </div>
+            ) : (
+              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs space-y-1">
+                <p className="font-bold text-white">
+                  {selectedVehicle.roadSegmentSummary}
+                </p>
+                <p className="font-mono text-emerald-300">
+                  Lat {selectedVehicle.lat.toFixed(4)}, Lng{' '}
+                  {selectedVehicle.lng.toFixed(4)} • Updated{' '}
+                  {selectedVehicle.lastLocationUpdateSecondsAgo}s ago
+                </p>
+              </div>
+            )}
+          </section>
+        )}
+
+        {isAuthenticated && activeScreen === 'INCIDENT_HISTORY_TIMELINE' && (
+          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+            <h1 className="text-xl font-bold text-white">
+              Incident History & Authority Response ({incidents.length})
+            </h1>
+            {incidents.length === 0 ? (
+              <p className="text-xs text-slate-400">No incidents recorded.</p>
+            ) : (
               <div className="space-y-3">
                 {incidents.map((inc) => (
                   <div
                     key={inc.id}
-                    className="p-4 rounded-xl border border-slate-200 bg-slate-50/60 space-y-2"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs font-bold text-slate-900">
-                          {inc.id}
-                        </span>
-                        <span
-                          className={`px-2 py-0.5 rounded text-[11px] font-bold ${
-                            inc.source === 'MANUAL_USER_SOS'
-                              ? 'bg-red-100 text-[#DC2626]'
-                              : 'bg-blue-100 text-[#1E40AF]'
-                          }`}
-                        >
-                          {inc.source === 'MANUAL_USER_SOS'
-                            ? 'Manual User SOS'
-                            : 'STM32U575 Hardware Sensor'}
-                        </span>
-                        <span className="text-xs font-bold text-slate-800">
-                          {inc.incidentType}
-                        </span>
-                      </div>
-                      <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-white border border-slate-300 text-slate-800">
-                        State: {inc.lifecycleState}
-                      </span>
-                    </div>
-
-                    <p className="text-xs text-slate-700">{inc.description}</p>
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
-                      <span>
-                        Location: {inc.roadSegmentSummary} ({inc.jurisdictionCode})
-                      </span>
-                      <span>Occurred: {inc.occurredAt}</span>
-                    </div>
-
-                    {inc.lifecycleState !== INCIDENT_LIFECYCLE_STATES.RESOLVED &&
-                      inc.lifecycleState !==
-                        INCIDENT_LIFECYCLE_STATES.FALSE_ALARM_CANCELLED && (
-                        <div className="pt-2 flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleCancelFalseAlarm(inc.id)}
-                            className="px-3 py-1 rounded-md border border-slate-300 bg-white hover:bg-slate-100 text-xs font-medium text-slate-700"
-                          >
-                            Mark as False Alarm / Cancel
-                          </button>
-                        </div>
-                      )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* ================================================================
-              SCREEN 7: ADD / MANAGE FAMILY MEMBERS
-          ================================================================ */}
-          {activeScreen === 'FAMILY_MEMBERS' && (
-            <div className="space-y-6">
-              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4">
-                <div>
-                  <h2 className="text-base font-bold text-slate-900">
-                    Invite Authorised Family Member ({selectedVehicle.registrationNumber})
-                  </h2>
-                  <p className="text-xs text-slate-500">
-                    Owner creates an invitation with an initial password. The invited family member
-                    must verify their phone via 6-digit OTP and set a new private password on first
-                    login.
-                  </p>
-                </div>
-
-                <form
-                  onSubmit={handleInviteFamilyMember}
-                  className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs"
-                >
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      Family Member Full Name
-                    </label>
-                    <input
-                      type="text"
-                      value={inviteName}
-                      onChange={(e) => setInviteName(e.target.value)}
-                      placeholder="e.g. Ananya Vikram Singh"
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      Phone Number (E.164)
-                    </label>
-                    <input
-                      type="text"
-                      value={invitePhone}
-                      onChange={(e) => setInvitePhone(e.target.value)}
-                      placeholder="+919876543219"
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      Relationship
-                    </label>
-                    <input
-                      type="text"
-                      value={inviteRelationship}
-                      onChange={(e) => setInviteRelationship(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      One-Time Initial Password (Hashed Server-Side)
-                    </label>
-                    <input
-                      type="text"
-                      value={inviteTempPassword}
-                      onChange={(e) => setInviteTempPassword(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg font-mono"
-                    />
-                  </div>
-                  <div className="md:col-span-2 flex justify-end">
-                    <button
-                      type="submit"
-                      className="px-4 py-2 rounded-lg bg-[#2563EB] hover:bg-[#1E40AF] text-white font-semibold text-xs"
-                    >
-                      Send OTP-Protected Family Invitation
-                    </button>
-                  </div>
-                </form>
-              </div>
-
-              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-3">
-                <h3 className="text-sm font-bold text-slate-900">
-                  Current Family Memberships ({familyMembers.length})
-                </h3>
-                {familyMembers.map((m) => (
-                  <div
-                    key={m.id}
-                    className="p-4 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs"
+                    className="p-4 rounded-xl bg-slate-950 border border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs"
                   >
                     <div>
-                      <div className="font-bold text-slate-900">
-                        {m.fullName} ({m.relationship})
-                      </div>
-                      <div className="text-slate-500 font-mono">
-                        {m.phoneE164} · Status: {m.status}
-                      </div>
+                      <span className="font-mono font-bold text-amber-300">
+                        {inc.id} • {inc.incidentType} ({inc.severity})
+                      </span>
+                      <p className="text-white font-semibold mt-0.5">
+                        {inc.roadSegmentSummary} — State: {inc.lifecycleState}
+                      </p>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setActiveScreen('FAMILY_PERMISSIONS')}
-                        className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 font-medium"
-                      >
-                        Permissions
-                      </button>
-                      {m.status !== 'REVOKED' && (
+                    {inc.lifecycleState !== 'RESOLVED' &&
+                      inc.lifecycleState !== 'FALSE_ALARM_CANCELLED' && (
                         <button
                           type="button"
-                          onClick={() => revokeFamilyMember(m.id)}
-                          className="px-3 py-1.5 rounded-lg bg-red-50 text-[#DC2626] border border-red-200 font-semibold"
+                          onClick={() =>
+                            void handleAcknowledgeIncidentFromDetail(inc.id)
+                          }
+                          className="px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-200 font-semibold"
                         >
-                          Revoke Access
+                          Acknowledge Alert
                         </button>
                       )}
-                    </div>
                   </div>
                 ))}
               </div>
-            </div>
-          )}
+            )}
+          </section>
+        )}
 
-          {/* ================================================================
-              SCREEN 8: FAMILY MEMBER PERMISSIONS MATRIX
-          ================================================================ */}
-          {activeScreen === 'FAMILY_PERMISSIONS' && (
-            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4">
-              <div>
-                <h2 className="text-base font-bold text-slate-900">
-                  Granular Family Member Permissions
-                </h2>
-                <p className="text-xs text-slate-500">
-                  Checked server-side on every request and enforced in Firestore security rules.
+        {isAuthenticated && activeScreen === 'FAMILY_MEMBERS_PERMISSIONS' && (
+          <section className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+              <h1 className="text-lg font-bold text-white">
+                Invite Family Member
+              </h1>
+              {!canManageAccessAndContacts ? (
+                <p className="text-xs text-slate-400">
+                  Only the vehicle owner can invite or revoke family members.
                 </p>
-              </div>
-              <div className="space-y-4">
-                {familyMembers.map((m) => (
+              ) : (
+                <form onSubmit={handleInviteFamilyMember} className="space-y-3">
+                  <input
+                    type="text"
+                    value={inviteFullName}
+                    onChange={(e) => setInviteFullName(e.target.value)}
+                    placeholder="Family Member Full Name"
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-white"
+                  />
+                  <input
+                    type="text"
+                    value={invitePhoneE164}
+                    onChange={(e) => setInvitePhoneE164(e.target.value)}
+                    placeholder="Phone (+91...)"
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-white"
+                  />
+                  <input
+                    type="text"
+                    value={inviteRelationship}
+                    onChange={(e) => setInviteRelationship(e.target.value)}
+                    placeholder="Relationship"
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-white"
+                  />
+                  <input
+                    type="password"
+                    value={inviteInitialPassword}
+                    onChange={(e) => setInviteInitialPassword(e.target.value)}
+                    placeholder="Temporary Initial Password"
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-white"
+                  />
+                  {inviteBanner && (
+                    <div className="p-2.5 rounded-xl bg-emerald-500/10 text-xs text-emerald-200">
+                      {inviteBanner}
+                    </div>
+                  )}
+                  <button
+                    type="submit"
+                    disabled={isLoading || vehicles.length === 0}
+                    className="w-full py-2.5 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5"
+                  >
+                    <UserPlus className="h-4 w-4" />
+                    Invite Family Member
+                  </button>
+                </form>
+              )}
+            </div>
+
+            <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+              <h2 className="text-base font-bold text-white">
+                Linked Family Members ({familyMembers.length})
+              </h2>
+              <div className="space-y-3">
+                {familyMembers.map((member) => (
                   <div
-                    key={m.id}
-                    className="p-4 rounded-xl border border-slate-200 space-y-3 text-xs"
+                    key={member.id}
+                    className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3 text-xs"
                   >
                     <div className="flex items-center justify-between">
                       <div>
-                        <span className="font-bold text-slate-900">{m.fullName}</span>{' '}
-                        <span className="text-slate-500">({m.phoneE164})</span>
+                        <span className="font-bold text-white">
+                          {member.fullName} ({member.relationship})
+                        </span>
+                        <p className="text-slate-400">
+                          {member.phoneE164} • {member.status}
+                        </p>
                       </div>
-                      <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-slate-100">
-                        {m.status}
-                      </span>
+                      {canManageAccessAndContacts &&
+                        member.status !== 'REVOKED' && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void handleRevokeFamilyMember(member.id)
+                            }
+                            className="px-2.5 py-1 rounded bg-rose-500/15 text-rose-300 font-semibold"
+                          >
+                            Revoke
+                          </button>
+                        )}
                     </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                       {(
                         [
-                          ['canViewLocation', 'View Location'],
-                          ['canViewTelemetry', 'View Telemetry'],
+                          ['canViewLocation', 'Live Location'],
+                          ['canViewTelemetry', 'Telemetry'],
                           ['canReceiveCriticalAlerts', 'Critical Alerts'],
                           ['canViewIncidentHistory', 'Incident History'],
-                          ['canTriggerSos', 'Trigger SOS']
+                          ['canTriggerSos', 'Remote SOS']
                         ] as const
                       ).map(([permKey, label]) => (
                         <button
                           key={permKey}
                           type="button"
-                          onClick={() => toggleFamilyPermission(m.id, permKey)}
-                          className={`p-2 rounded-lg border text-center font-semibold transition ${
-                            m.permissions[permKey]
-                              ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
-                              : 'bg-slate-50 border-slate-200 text-slate-500'
+                          disabled={
+                            !canManageAccessAndContacts ||
+                            member.status === 'REVOKED'
+                          }
+                          onClick={() =>
+                            void handleToggleFamilyPermission(
+                              member.id,
+                              permKey
+                            )
+                          }
+                          className={`px-2 py-1 rounded border flex items-center justify-between ${
+                            member.permissions[permKey]
+                              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
+                              : 'bg-slate-900 border-slate-800 text-slate-500'
                           }`}
                         >
-                          {label}: {m.permissions[permKey] ? 'ON' : 'OFF'}
+                          <span>{label}</span>
+                          <span>
+                            {member.permissions[permKey] ? 'ON' : 'OFF'}
+                          </span>
                         </button>
                       ))}
                     </div>
@@ -1951,302 +1970,404 @@ export default function App() {
                 ))}
               </div>
             </div>
-          )}
+          </section>
+        )}
 
-          {/* ================================================================
-              SCREEN 9: DRIVER PROFILE & ACCESS
-          ================================================================ */}
-          {activeScreen === 'DRIVER_ACCESS' && (
-            <div className="space-y-6">
-              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4">
-                <h2 className="text-base font-bold text-slate-900">
-                  Assign Authorised Vehicle Driver
-                </h2>
-                <form
-                  onSubmit={handleAddDriver}
-                  className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs"
-                >
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      Driver Full Name
-                    </label>
-                    <input
-                      type="text"
-                      value={driverName}
-                      onChange={(e) => setDriverName(e.target.value)}
-                      placeholder="e.g. Suresh Pratap"
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      Driver Phone (E.164)
-                    </label>
-                    <input
-                      type="text"
-                      value={driverPhone}
-                      onChange={(e) => setDriverPhone(e.target.value)}
-                      placeholder="+919811223355"
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      Driving License Number
-                    </label>
-                    <input
-                      type="text"
-                      value={driverLicense}
-                      onChange={(e) => setDriverLicense(e.target.value)}
-                      placeholder="UP32-20190012345"
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      Shift Window
-                    </label>
-                    <input
-                      type="text"
-                      value={driverShift}
-                      onChange={(e) => setDriverShift(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                    />
-                  </div>
-                  <div className="md:col-span-2 flex justify-end">
-                    <button
-                      type="submit"
-                      className="px-4 py-2 rounded-lg bg-[#2563EB] text-white font-semibold text-xs"
-                    >
-                      Authorize Driver
-                    </button>
-                  </div>
+        {isAuthenticated && activeScreen === 'DRIVER_ASSIGNMENT_ACCESS' && (
+          <section className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+              <h1 className="text-lg font-bold text-white">Assign Driver</h1>
+              {!canManageAccessAndContacts ? (
+                <p className="text-xs text-slate-400">
+                  Only the vehicle owner can assign or revoke drivers.
+                </p>
+              ) : (
+                <form onSubmit={handleAssignDriver} className="space-y-3">
+                  <input
+                    type="text"
+                    value={driverFullName}
+                    onChange={(e) => setDriverFullName(e.target.value)}
+                    placeholder="Driver Full Name"
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-white"
+                  />
+                  <input
+                    type="text"
+                    value={driverPhoneE164}
+                    onChange={(e) => setDriverPhoneE164(e.target.value)}
+                    placeholder="Driver Phone (+91...)"
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-white"
+                  />
+                  <input
+                    type="text"
+                    value={driverLicense}
+                    onChange={(e) => setDriverLicense(e.target.value)}
+                    placeholder="License Number"
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-white"
+                  />
+                  {driverBanner && (
+                    <div className="p-2.5 rounded-xl bg-emerald-500/10 text-xs text-emerald-200">
+                      {driverBanner}
+                    </div>
+                  )}
+                  <button
+                    type="submit"
+                    disabled={isLoading || !selectedVehicle}
+                    className="w-full py-2.5 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs"
+                  >
+                    Assign Driver
+                  </button>
                 </form>
-              </div>
+              )}
+            </div>
 
-              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-3">
-                <h3 className="text-sm font-bold text-slate-900">Assigned Drivers</h3>
-                {drivers.map((d) => (
+            <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+              <h2 className="text-base font-bold text-white">
+                Assigned Drivers ({drivers.length})
+              </h2>
+              <div className="space-y-3">
+                {drivers.map((drv) => (
                   <div
-                    key={d.id}
-                    className="p-4 rounded-xl border border-slate-200 flex items-center justify-between text-xs"
+                    key={drv.id}
+                    className="p-4 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between text-xs"
                   >
                     <div>
-                      <div className="font-bold text-slate-900">{d.fullName}</div>
-                      <div className="text-slate-500 font-mono">
-                        {d.phoneE164} · License: {d.licenseNumber} · {d.assignedShift}
-                      </div>
+                      <p className="font-bold text-white">{drv.fullName}</p>
+                      <p className="text-slate-400">
+                        {drv.phoneE164} • {drv.status}
+                      </p>
                     </div>
-                    <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-800 font-semibold">
-                      {d.status}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* ================================================================
-              SCREEN 13: NOTIFICATIONS (FCM_ACCEPTED vs CLIENT_DELIVERED_ACK vs READ)
-          ================================================================ */}
-          {activeScreen === 'NOTIFICATIONS' && (
-            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4">
-              <div>
-                <h2 className="text-base font-bold text-slate-900">
-                  Notifications & Delivery Verification Log
-                </h2>
-                <p className="text-xs text-slate-500">
-                  Strictly distinguishes FCM enqueue acceptance (FCM_ACCEPTED) from verified device
-                  receipt (CLIENT_DELIVERED_ACK) and user read confirmation (READ).
-                </p>
-              </div>
-              <div className="space-y-3">
-                {notifications.map((n) => (
-                  <div
-                    key={n.id}
-                    className="p-4 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs"
-                  >
-                    <div className="space-y-1 max-w-xl">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-slate-900">{n.title}</span>
-                        <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-blue-50 text-[#1E40AF] border border-blue-200">
-                          {n.status}
-                        </span>
-                      </div>
-                      <p className="text-slate-600">{n.body}</p>
-                      <div className="text-[11px] text-slate-400">
-                        Created: {n.createdAt}
-                        {n.deliveredAt ? ` · Delivered ACK: ${n.deliveredAt}` : ''}
-                        {n.readAt ? ` · Read: ${n.readAt}` : ''}
-                      </div>
-                    </div>
-                    {n.status !== NOTIFICATION_STATUSES.READ && (
+                    {canManageAccessAndContacts && drv.status === 'ACTIVE' && (
                       <button
                         type="button"
-                        onClick={() => advanceNotificationState(n.id)}
-                        className="px-3 py-1.5 rounded-lg bg-[#2563EB] text-white font-semibold text-xs"
+                        onClick={() => void handleRevokeDriver(drv.id)}
+                        className="px-3 py-1 rounded bg-rose-500/15 text-rose-300 font-semibold"
                       >
-                        {n.status === NOTIFICATION_STATUSES.FCM_ACCEPTED
-                          ? 'Confirm Client Delivered ACK'
-                          : 'Mark as READ'}
+                        Revoke
                       </button>
                     )}
                   </div>
                 ))}
               </div>
             </div>
-          )}
+          </section>
+        )}
 
-          {/* ================================================================
-              SCREEN 14: ACCOUNT & PRIVACY SETTINGS
-          ================================================================ */}
-          {activeScreen === 'ACCOUNT_PRIVACY' && (
-            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-5 text-xs">
-              <div>
-                <h2 className="text-base font-bold text-slate-900">
-                  Account Security, Privacy & Native Capacitor Configuration
-                </h2>
-                <p className="text-xs text-slate-500">
-                  Manage emergency data-sharing policies and inspect native Android/iOS Firebase
-                  bindings.
+        {isAuthenticated && activeScreen === 'EMERGENCY_CONTACTS' && (
+          <section className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+              <h1 className="text-lg font-bold text-white">
+                Add Emergency Contact
+              </h1>
+              {!canManageAccessAndContacts ? (
+                <p className="text-xs text-slate-400">
+                  Managed by the primary vehicle owner.
                 </p>
-              </div>
-
-              <div className="space-y-3">
-                <label className="flex items-center justify-between p-3.5 rounded-xl border border-slate-200">
-                  <div>
-                    <div className="font-bold text-slate-900">
-                      Emergency Medical Crash Telemetry Sharing
-                    </div>
-                    <div className="text-slate-500">
-                      Automatically share cabin occupant count, temperature, and impact G-force with
-                      Medical Authority during critical incidents.
-                    </div>
-                  </div>
+              ) : (
+                <form
+                  onSubmit={handleAddEmergencyContact}
+                  className="space-y-3"
+                >
                   <input
-                    type="checkbox"
-                    checked={shareMedicalDataOnCrash}
-                    onChange={(e) => setShareMedicalDataOnCrash(e.target.checked)}
-                    className="w-4 h-4 accent-[#2563EB]"
+                    type="text"
+                    value={contactFullName}
+                    onChange={(e) => setContactFullName(e.target.value)}
+                    placeholder="Contact Full Name"
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-white"
                   />
-                </label>
-
-                <label className="flex items-center justify-between p-3.5 rounded-xl border border-slate-200">
-                  <div>
-                    <div className="font-bold text-slate-900">
-                      Anonymized Road-Surface Hazard Contributions
-                    </div>
-                    <div className="text-slate-500">
-                      Share Z-axis shock coordinates with Road Authorities. Vehicle registration,
-                      VIN, and owner identity are always stripped.
-                    </div>
-                  </div>
                   <input
-                    type="checkbox"
-                    checked={shareAnonymizedRoadHazards}
-                    onChange={(e) => setShareAnonymizedRoadHazards(e.target.checked)}
-                    className="w-4 h-4 accent-[#2563EB]"
+                    type="text"
+                    value={contactPhoneE164}
+                    onChange={(e) => setContactPhoneE164(e.target.value)}
+                    placeholder="Phone (+91...)"
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-white"
                   />
-                </label>
-              </div>
-
-              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5 font-mono text-[11px]">
-                <div className="font-sans font-bold text-slate-800 text-xs">
-                  Bound Firebase & Capacitor Native Identifiers
-                </div>
-                <div>Android App ID: {VEERXCAPE_NATIVE_APP_METADATA.android.mobileSdkAppId}</div>
-                <div>iOS Google App ID: {VEERXCAPE_NATIVE_APP_METADATA.ios.googleAppId}</div>
-                <div>Android Config: {VEERXCAPE_NATIVE_APP_METADATA.android.configPath}</div>
-                <div>iOS Config: {VEERXCAPE_NATIVE_APP_METADATA.ios.configPath}</div>
-              </div>
-            </div>
-          )}
-
-          {/* ================================================================
-              SCREEN 15: HELP & SUPPORT TICKETS
-          ================================================================ */}
-          {activeScreen === 'HELP_SUPPORT' && (
-            <div className="space-y-6">
-              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4">
-                <h2 className="text-base font-bold text-slate-900">
-                  Raise VeerXcape Support Ticket
-                </h2>
-                <form onSubmit={handleCreateTicket} className="space-y-3 text-xs">
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Category</label>
-                    <select
-                      value={ticketCategory}
-                      onChange={(e) =>
-                        setTicketCategory(
-                          e.target.value as MobileSupportTicketItem['category']
-                        )
-                      }
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white"
-                    >
-                      <option value="DEVICE_ISSUE">STM32U575 Hardware / Calibration Issue</option>
-                      <option value="SHOWROOM_CORRECTION">
-                        Showroom Vehicle Record Correction
-                      </option>
-                      <option value="FALSE_ALARM">False Alarm Review</option>
-                      <option value="ACCOUNT_RECOVERY">Account / Family Access Assistance</option>
-                      <option value="GENERAL">General Inquiry</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Subject</label>
-                    <input
-                      type="text"
-                      value={ticketSubject}
-                      onChange={(e) => setTicketSubject(e.target.value)}
-                      placeholder="Brief summary of your request"
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Description</label>
-                    <textarea
-                      rows={3}
-                      value={ticketDescription}
-                      onChange={(e) => setTicketDescription(e.target.value)}
-                      placeholder="Include relevant timestamps or device observations"
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                    />
-                  </div>
+                  <input
+                    type="text"
+                    value={contactRelationship}
+                    onChange={(e) => setContactRelationship(e.target.value)}
+                    placeholder="Relationship"
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-white"
+                  />
+                  {contactBanner && (
+                    <div className="p-2.5 rounded-xl bg-emerald-500/10 text-xs text-emerald-200">
+                      {contactBanner}
+                    </div>
+                  )}
                   <button
                     type="submit"
-                    className="px-4 py-2 rounded-lg bg-[#2563EB] text-white font-semibold text-xs"
+                    disabled={isLoading || !selectedVehicle}
+                    className="w-full py-2.5 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs"
                   >
-                    Submit Support Ticket
+                    Save Emergency Contact
                   </button>
                 </form>
-              </div>
+              )}
+            </div>
 
-              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-3">
-                <h3 className="text-sm font-bold text-slate-900">Your Support Tickets</h3>
-                {tickets.map((t) => (
+            <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+              <h2 className="text-base font-bold text-white">
+                Emergency Contacts ({emergencyContacts.length})
+              </h2>
+              <div className="space-y-3">
+                {emergencyContacts.map((ec) => (
                   <div
-                    key={t.id}
-                    className="p-4 rounded-xl border border-slate-200 flex items-center justify-between text-xs"
+                    key={ec.id}
+                    className="p-4 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between text-xs"
                   >
                     <div>
-                      <div className="font-bold text-slate-900">
-                        {t.id} · {t.subject}
-                      </div>
-                      <div className="text-slate-500">
-                        {t.category} · Created {t.createdAt}
-                      </div>
+                      <p className="font-bold text-white">
+                        #{ec.priorityOrder} {ec.name} ({ec.relationship})
+                      </p>
+                      <p className="text-slate-400">{ec.phoneE164}</p>
                     </div>
-                    <span className="px-2.5 py-1 rounded-full bg-blue-50 text-[#1E40AF] font-semibold">
-                      {t.status}
-                    </span>
+                    {canManageAccessAndContacts && (
+                      <button
+                        type="button"
+                        onClick={() => void handleRemoveEmergencyContact(ec.id)}
+                        className="px-2.5 py-1 rounded bg-rose-500/15 text-rose-300"
+                      >
+                        Delete
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
             </div>
-          )}
-        </main>
-      </div>
+          </section>
+        )}
+
+        {isAuthenticated && activeScreen === 'MANUAL_SOS_SIMULATION' && (
+          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
+            <h1 className="text-xl font-bold text-white">
+              Manual SOS Dispatch & False-Alarm Window
+            </h1>
+            <input
+              type="text"
+              value={sosSimulationNote}
+              onChange={(e) => setSosSimulationNote(e.target.value)}
+              placeholder="Optional occupant note or cancellation reason"
+              className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-xs text-white"
+            />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                disabled={isLoading || !selectedVehicle}
+                onClick={() => void handleTriggerManualSos(false)}
+                className="py-3.5 px-4 rounded-xl bg-rose-600 text-white font-bold text-sm flex items-center justify-center gap-2"
+              >
+                <PhoneCall className="h-4 w-4" />
+                TRIGGER LIVE EMERGENCY SOS
+              </button>
+              <button
+                type="button"
+                disabled={isLoading || !selectedVehicle}
+                onClick={() => void handleTriggerManualSos(true)}
+                className="py-3.5 px-4 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-200 font-bold text-sm flex items-center justify-center gap-2"
+              >
+                <Sparkles className="h-4 w-4" />
+                Run Simulated SOS Drill
+              </button>
+            </div>
+            {sosCountdownSec !== null && activeSosIncidentId && (
+              <div className="p-4 rounded-2xl bg-rose-950/60 border border-rose-500/50 space-y-3">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold text-rose-300">
+                    Active SOS ({activeSosIncidentId})
+                  </span>
+                  <span className="font-mono font-bold text-white">
+                    {sosCountdownSec}s remaining
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  disabled={isLoading}
+                  onClick={() => void handleCancelFalseAlarm()}
+                  className="w-full py-2.5 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs"
+                >
+                  I AM SAFE — CANCEL FALSE ALARM
+                </button>
+              </div>
+            )}
+            {sosStatusBanner && (
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs text-amber-200">
+                {sosStatusBanner}
+              </div>
+            )}
+          </section>
+        )}
+
+        {isAuthenticated && activeScreen === 'NOTIFICATIONS_CENTER' && (
+          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h1 className="text-xl font-bold text-white">
+                Notifications & Client Delivery ACK ({notifications.length})
+              </h1>
+              {notifications.length > 0 && (
+                <button
+                  type="button"
+                  disabled={isLoading}
+                  onClick={() => void handleMarkAllNotificationsRead()}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 text-xs font-semibold text-slate-200"
+                >
+                  Mark All Read
+                </button>
+              )}
+            </div>
+            <div className="space-y-3">
+              {notifications.map((n) => (
+                <div
+                  key={n.id}
+                  className="p-4 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-3 text-xs"
+                >
+                  <div>
+                    <p className="font-bold text-white">
+                      {n.title}{' '}
+                      <span className="text-amber-300 font-mono">
+                        [{n.status}]
+                      </span>
+                    </p>
+                    <p className="text-slate-300 mt-0.5">{n.body}</p>
+                  </div>
+                  {n.status !== 'READ' && (
+                    <button
+                      type="button"
+                      disabled={isLoading}
+                      onClick={() => void handleAcknowledgeNotification(n.id)}
+                      className="px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-300 font-semibold"
+                    >
+                      {n.status === 'QUEUED' || n.status === 'FCM_ACCEPTED'
+                        ? 'ACK Delivered'
+                        : 'Mark Read'}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {isAuthenticated && activeScreen === 'PROFILE_PRIVACY_SETTINGS' && (
+          <section className="max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+            <h1 className="text-xl font-bold text-white">
+              Profile & Emergency Disclosure Settings
+            </h1>
+            <form onSubmit={handleSaveProfileSettings} className="space-y-3">
+              <input
+                type="text"
+                value={profileFullName}
+                onChange={(e) => setProfileFullName(e.target.value)}
+                placeholder="Full Name"
+                className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-white"
+              />
+              <label className="flex items-center justify-between p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs">
+                <span>Share emergency details with 108 Medical on SOS</span>
+                <input
+                  type="checkbox"
+                  checked={shareWithMedicalOnSos}
+                  onChange={(e) => setShareWithMedicalOnSos(e.target.checked)}
+                />
+              </label>
+              <label className="flex items-center justify-between p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs">
+                <span>Share vehicle details with 112 Police on SOS</span>
+                <input
+                  type="checkbox"
+                  checked={shareWithPoliceOnSos}
+                  onChange={(e) => setShareWithPoliceOnSos(e.target.checked)}
+                />
+              </label>
+              {profileSavedBanner && (
+                <div className="p-3 rounded-xl bg-emerald-500/10 text-xs text-emerald-200">
+                  {profileSavedBanner}
+                </div>
+              )}
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="px-5 py-2.5 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs"
+              >
+                Save Preferences
+              </button>
+            </form>
+          </section>
+        )}
+
+        {isAuthenticated && activeScreen === 'SUPPORT_HELP_TICKETS' && (
+          <section className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+              <h1 className="text-lg font-bold text-white">
+                Raise Support Ticket
+              </h1>
+              <form onSubmit={handleCreateSupportTicket} className="space-y-3">
+                <select
+                  value={ticketCategory}
+                  onChange={(e) =>
+                    setTicketCategory(e.target.value as typeof ticketCategory)
+                  }
+                  className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-white"
+                >
+                  <option value="DEVICE_ISSUE">
+                    STM32U575 Hardware / Calibration
+                  </option>
+                  <option value="REGISTRATION_CORRECTION">
+                    Showroom Registration Correction
+                  </option>
+                  <option value="ACCOUNT_RECOVERY">Account Recovery</option>
+                  <option value="GENERAL_INQUIRY">General Inquiry</option>
+                </select>
+                <input
+                  type="text"
+                  value={ticketSubject}
+                  onChange={(e) => setTicketSubject(e.target.value)}
+                  placeholder="Subject"
+                  className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-white"
+                />
+                <textarea
+                  rows={3}
+                  value={ticketDescription}
+                  onChange={(e) => setTicketDescription(e.target.value)}
+                  placeholder="Description"
+                  className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-white"
+                />
+                {ticketBanner && (
+                  <div className="p-2.5 rounded-xl bg-emerald-500/10 text-xs text-emerald-200">
+                    {ticketBanner}
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full py-2.5 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5"
+                >
+                  <Wrench className="h-4 w-4" />
+                  Submit Support Ticket
+                </button>
+              </form>
+            </div>
+
+            <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+              <h2 className="text-base font-bold text-white">
+                Support Tickets ({supportTickets.length})
+              </h2>
+              <div className="space-y-3">
+                {supportTickets.map((t) => (
+                  <div
+                    key={t.id}
+                    className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs space-y-1"
+                  >
+                    <span className="font-mono font-bold text-amber-300">
+                      {t.id} • {t.category} ({t.status})
+                    </span>
+                    <p className="font-bold text-white">{t.subject}</p>
+                    <p className="text-slate-400">{t.description}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
+      </main>
     </div>
   );
 }
 
+export default App;

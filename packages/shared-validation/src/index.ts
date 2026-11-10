@@ -348,3 +348,81 @@ export const authorityCreateSchema = z.object({
   contactEmail: z.string().email()
 });
 
+// ============================================================================
+// 7. STAGE 11 FRONTEND-TO-BACKEND INTEGRATION SCHEMAS
+// ============================================================================
+export const emergencyContactPayloadSchema = z.object({
+  vehicleId: z.string().trim().min(4),
+  name: z.string().trim().min(2).max(100),
+  phoneE164: phoneE164Schema,
+  relationship: z.string().trim().min(2).max(50),
+  priorityOrder: z.union([
+    z.literal(1),
+    z.literal(2),
+    z.literal(3),
+    z.literal(4),
+    z.literal(5)
+  ]),
+  notifyOnAccident: z.boolean().default(true),
+  notifyOnSos: z.boolean().default(true),
+  notifyOnOccupantAlert: z.boolean().default(true)
+});
+
+export const userProfileUpdatePayloadSchema = z.object({
+  fullName: z.string().trim().min(2).max(100).optional(),
+  language: z.string().trim().min(2).max(10).optional(),
+  notificationPreferences: z
+    .object({
+      pushEnabled: z.boolean(),
+      criticalAlertsOnly: z.boolean()
+    })
+    .optional(),
+  privacySettings: z
+    .object({
+      shareWithMedicalOnSos: z.boolean(),
+      shareWithPoliceOnSos: z.boolean()
+    })
+    .optional()
+});
+
+export const supportTicketCreatePayloadSchema = z.object({
+  vehicleId: z.string().trim().min(4).optional().nullable(),
+  category: z.enum([
+    'DEVICE_ISSUE',
+    'ACCOUNT_RECOVERY',
+    'REGISTRATION_CORRECTION',
+    'GENERAL_INQUIRY'
+  ]),
+  subject: z.string().trim().min(4).max(150),
+  description: z.string().trim().min(8).max(2000)
+});
+
+export const showroomCustomerOtpVerifyPayloadSchema = z.object({
+  phoneE164: phoneE164Schema,
+  otpCode: otpCodeSchema
+});
+
+export const vehiclePermittedCorrectionPayloadSchema = z.object({
+  color: z.string().trim().min(2).max(40).optional(),
+  variant: z.string().trim().min(1).max(80).optional(),
+  reason: z
+    .string()
+    .trim()
+    .min(5, 'A detailed audit reason (minimum 5 characters) is mandatory.')
+    .max(500)
+});
+
+export const authorityVerificationStatusPayloadSchema = z.object({
+  verificationStatus: z.enum(['VERIFIED', 'SUSPENDED']),
+  reason: z.string().trim().min(3).max(500).optional()
+});
+
+export const publicContactInquiryPayloadSchema = z.object({
+  fullName: z.string().trim().min(2).max(100),
+  organisation: z.string().trim().max(150).optional().default(''),
+  email: z.string().trim().email('Please provide a valid email address.'),
+  inquiryType: z.enum(['SHOWROOM', 'AUTHORITY', 'CUSTOMER']),
+  message: z.string().trim().min(8, 'Message must be at least 8 characters.').max(2000)
+});
+
+
