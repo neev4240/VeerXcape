@@ -16,6 +16,7 @@
     "test:emulator:unit": "vitest run --config vitest.emulator.config.ts",
     "test:emulator": "PATH=\"/opt/homebrew/opt/openjdk@21/bin:$PATH\" npm run build:packages && npm run build --workspace=@veerxcape/functions && PATH=\"/opt/homebrew/opt/openjdk@21/bin:$PATH\" firebase emulators:exec --project veerxcape-01 --only auth,firestore,functions,storage \"npm run test:emulator:unit\"",
     "emulators:start": "PATH=\"/opt/homebrew/opt/openjdk@21/bin:$PATH\" npm run build:packages && npm run build --workspace=@veerxcape/functions && PATH=\"/opt/homebrew/opt/openjdk@21/bin:$PATH\" firebase emulators:start --project veerxcape-01 --only auth,firestore,functions,storage",
+    "release:app": "node scripts/build-release.mjs",
     "clean": "rm -rf packages/*/dist functions/lib apps/*/dist"
   },
   "devDependencies": {
