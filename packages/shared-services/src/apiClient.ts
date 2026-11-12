@@ -180,7 +180,6 @@ export interface AdminOverviewDTO {
 
 export interface AuditChainVerificationDTO {
   valid: boolean;
-  totalEntries: number;
   checkedCount: number;
   brokenAtSequenceIndex: number | null;
   brokenAtLogId: string | null;
@@ -226,7 +225,7 @@ export class VeerXcapeApiClient {
   constructor(config: ApiClientConfig = {}) {
     const env =
       typeof import.meta !== 'undefined' &&
-      (import.meta as unknown as { env?: Record<string, string | boolean | undefined> }).env
+        (import.meta as unknown as { env?: Record<string, string | boolean | undefined> }).env
         ? ((import.meta as unknown as { env: Record<string, string | boolean | undefined> }).env)
         : {};
     const webCfg = resolveFirebaseWebConfig(env);
@@ -879,10 +878,10 @@ export class VeerXcapeApiClient {
   async createSupportTicket(payload: {
     vehicleId?: string | null;
     category:
-      | 'DEVICE_ISSUE'
-      | 'ACCOUNT_RECOVERY'
-      | 'REGISTRATION_CORRECTION'
-      | 'GENERAL_INQUIRY';
+    | 'DEVICE_ISSUE'
+    | 'ACCOUNT_RECOVERY'
+    | 'REGISTRATION_CORRECTION'
+    | 'GENERAL_INQUIRY';
     subject: string;
     description: string;
   }): Promise<StandardApiResponse<SupportTicketDocument>> {
@@ -930,11 +929,11 @@ export class VeerXcapeApiClient {
     payload: {
       incidentId: string;
       newState:
-        | IncidentLifecycleState
-        | 'AUTHORITY_ACKNOWLEDGED'
-        | 'DISPATCH_RECORDED_BY_AUTHORITY'
-        | 'RESPONSE_CONFIRMED'
-        | 'RESOLVED';
+      | IncidentLifecycleState
+      | 'AUTHORITY_ACKNOWLEDGED'
+      | 'DISPATCH_RECORDED_BY_AUTHORITY'
+      | 'RESPONSE_CONFIRMED'
+      | 'RESOLVED';
       note: string;
       assignedOfficerName?: string;
       dispatchReferenceCode?: string;
@@ -1174,7 +1173,7 @@ export class VeerXcapeApiClient {
   }): Promise<
     StandardApiResponse<{
       device: DeviceDocument;
-      oneTimeProvisioningHmacSecretHex: string;
+      provisioningSecretForFactoryFlashOnly: string;
     }>
   > {
     return this.request('/api/v1/admin/devices/provision', {
@@ -1189,8 +1188,8 @@ export class VeerXcapeApiClient {
   ): Promise<
     StandardApiResponse<{
       device: DeviceDocument;
-      newSecretVersion: number;
-      oneTimeNewHmacSecretHex: string;
+      newKeyVersion: number;
+      newSecretForFactoryReflashOnly: string;
     }>
   > {
     return this.request(

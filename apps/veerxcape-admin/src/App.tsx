@@ -479,7 +479,7 @@ export function App(): React.JSX.Element {
         })
       );
       setProvisionSecretBanner(
-        `Provisioned ${res.device.id} (${res.device.serialNumber}). One-Time Factory HMAC Secret: ${res.oneTimeProvisioningHmacSecretHex}`
+        `Provisioned ${res.device.id} (${res.device.serialNumber}). One-Time Factory HMAC Secret: ${res.provisioningSecretForFactoryFlashOnly}`
       );
       setNewSerialNumber('');
       setNewImei('');
@@ -501,7 +501,7 @@ export function App(): React.JSX.Element {
         })
       );
       setProvisionSecretBanner(
-        `Key rotated for ${deviceId} (Key Version v${res.newSecretVersion}). New One-Time HMAC Secret: ${res.oneTimeNewHmacSecretHex}`
+        `Key rotated for ${deviceId} (Key Version v${res.newKeyVersion}). New One-Time HMAC Secret: ${res.newSecretForFactoryReflashOnly}`
       );
       await loadAdminWorkspace();
     } catch (err) {
@@ -616,11 +616,10 @@ export function App(): React.JSX.Element {
             <div className="flex flex-wrap items-center gap-2">
               {workspace && (
                 <div
-                  className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-2 ${
-                    workspace.auditVerification.valid
+                  className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-2 ${workspace.auditVerification.valid
                       ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
                       : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-                  }`}
+                    }`}
                 >
                   <Link2 className="h-4 w-4" />
                   <span>
@@ -816,11 +815,10 @@ export function App(): React.JSX.Element {
                     key={t.id}
                     type="button"
                     onClick={() => setActiveTab(t.id)}
-                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition ${
-                      active
+                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition ${active
                         ? 'bg-amber-500 text-slate-950 font-bold'
                         : 'bg-slate-950 text-slate-300 border border-slate-800'
-                    }`}
+                      }`}
                   >
                     <Icon className="h-3.5 w-3.5" />
                     <span>{t.label}</span>

@@ -32,6 +32,7 @@ import {
 } from '../shared/cryptoUtils.js';
 import { AppError } from '../shared/errors.js';
 import type { VeerXcapeBackendRuntime } from '../shared/runtime.js';
+import { ensureDefaultBootstrapAccountIfMatching } from './defaultBootstrapAccounts.js';
 
 const OTP_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const OTP_RATE_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
@@ -401,7 +402,14 @@ export class AuthService {
     activeRoles: UserRoleDocument[];
   }> {
     const parsed = customerPhoneLoginSchema.parse(rawInput);
-    const uid = await this.resolveUidByPhoneE164(parsed.phoneE164);
+    let uid = await this.resolveUidByPhoneE164(parsed.phoneE164);
+
+    if (!uid) {
+      uid = await ensureDefaultBootstrapAccountIfMatching(
+        this.runtime,
+        parsed.phoneE164
+      );
+    }
 
     if (!uid) {
       throw new AppError(401, 'UNAUTHORIZED', 'Invalid phone number or password.');

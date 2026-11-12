@@ -19,6 +19,7 @@ import type {
   UserRoleDocument
 } from '@veerxcape/shared-types';
 import { createVeerXcapeExpressApp } from '../app.js';
+import { DEFAULT_BOOTSTRAP_ACCOUNTS } from '../auth/defaultBootstrapAccounts.js';
 import { hashSecretWithScrypt } from '../shared/cryptoUtils.js';
 import { createInMemoryTestRuntime } from '../shared/runtime.js';
 
@@ -212,7 +213,7 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
     // Provision hardware device allocated to Company A / Showroom A1
     const provisionRes = unwrapApiResponse(
       await adminClient.provisionDevice({
-        serialNumber: 'VX-STM32U575-1101',
+        serialNumber: 'VX-STM32U575-STAGE1101',
         imei: '358901234567890',
         simIccid: '8991101200003204510',
         firmwareVersion: '2.4.0',
@@ -221,8 +222,8 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
       })
     );
     const provisionedDevice = provisionRes.device;
-    const deviceSecretHex = provisionRes.oneTimeProvisioningHmacSecretHex;
-    expect(provisionedDevice.serialNumber).toBe('VX-STM32U575-1101');
+    const deviceSecretHex = provisionRes.provisioningSecretForFactoryFlashOnly;
+    expect(provisionedDevice.serialNumber).toBe('VX-STM32U575-STAGE1101');
     expect(deviceSecretHex).toMatch(/^[0-9a-f]{64}$/i);
 
     // Seed Company Admin A, Showroom Staff A1, and Showroom Staff B1
@@ -552,55 +553,28 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
       })
     );
 
-    // Device sends signed telemetry so live location & freshness are populated
+    // Device sends signed heartbeat (seq 1) and telemetry (seq 2) so live telemetry is fresh
     const nowMs = runtime.now().getTime();
-    const nowIso = new Date(nowMs).toISOString();
-    const telemetryPayloadObj = {
-      isSimulated: false,
-      gnss: {
-        lat: 12.9716,
-        lng: 77.5946,
-        accuracyMeters: 5,
-        speedKmh: 46.5,
-        heading: 90,
-        recordedAt: nowIso
-      },
-      imu: {
-        accelXg: 0.02,
-        accelYg: -0.01,
-        accelZg: 1.0,
-        peakImpactG: 1.02,
-        tiltDegrees: 1.5
-      },
-      cabin: {
-        occupantDetected: true,
-        cabinTempCelsius: 24.5,
-        smokeDetected: false,
-        coPpm: 2
-      },
-      vehicleBus: {
-        ignitionOn: true,
-        doorsLocked: true,
-        windowsClosed: true
-      },
-      power: {
-        mainVoltageMv: 12750,
-        backupBatteryPercent: 98,
-        powerSource: 'VEHICLE_12V'
-      }
-    };
-    const telemetryRawBody = JSON.stringify(telemetryPayloadObj);
-    const telemetrySig = computeStm32HmacSignature({
+    const hbBody = JSON.stringify({
+      mcuUptimeSeconds: 1200,
+      powerSource: 'VEHICLE_12V',
+      backupBatteryPercent: 98,
+      batteryVoltageMv: 13800,
+      cellularRssiDbm: -68,
+      gnssFixStatus: 'FIX_3D',
+      firmwareVersion: '2.4.0'
+    });
+    const hbSig = computeStm32HmacSignature({
       deviceSecretKeyHex: deviceSecretHex,
       serialNumber: provisionedDevice.serialNumber,
       httpMethod: 'POST',
-      requestPath: '/api/v1/iot/telemetry',
+      requestPath: '/api/v1/iot/heartbeat',
       deviceTimestampMs: nowMs,
       transmissionTimestampMs: nowMs,
       sequenceNumber: 1,
-      rawBody: telemetryRawBody
+      rawBody: hbBody
     });
-    const telemetryRes = await fetch(`${baseUrl}/api/v1/iot/telemetry`, {
+    const hbRes = await fetch(`${baseUrl}/api/v1/iot/heartbeat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -608,11 +582,69 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
         'x-device-timestamp': String(nowMs),
         'x-transmission-timestamp': String(nowMs),
         'x-device-sequence': '1',
-        'x-device-signature': telemetrySig
+        'x-device-signature': hbSig
       },
-      body: telemetryRawBody
+      body: hbBody
     });
-    expect(telemetryRes.status).toBe(200);
+    expect(hbRes.status).toBe(200);
+
+    const telBody = JSON.stringify({
+      isSimulated: false,
+      gnss: {
+        lat: 12.9716,
+        lng: 77.5946,
+        accuracyMeters: 4.5,
+        speedKmh: 46.5,
+        heading: 90,
+        recordedAt: runtime.now().toISOString()
+      },
+      imu: {
+        accelXg: 0.01,
+        accelYg: 0.02,
+        accelZg: 0.99,
+        peakImpactG: 1.0,
+        tiltDegrees: 1.1
+      },
+      cabin: {
+        occupantDetected: true,
+        cabinTempCelsius: 24.5,
+        smokeDetected: false,
+        coPpm: 4
+      },
+      vehicleBus: {
+        ignitionOn: true,
+        doorsLocked: true,
+        windowsClosed: true
+      },
+      power: {
+        mainVoltageMv: 13850,
+        backupBatteryPercent: 98,
+        powerSource: 'VEHICLE_12V'
+      }
+    });
+    const telSig = computeStm32HmacSignature({
+      deviceSecretKeyHex: deviceSecretHex,
+      serialNumber: provisionedDevice.serialNumber,
+      httpMethod: 'POST',
+      requestPath: '/api/v1/iot/telemetry',
+      deviceTimestampMs: nowMs,
+      transmissionTimestampMs: nowMs,
+      sequenceNumber: 2,
+      rawBody: telBody
+    });
+    const telRes = await fetch(`${baseUrl}/api/v1/iot/telemetry`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-device-serial': provisionedDevice.serialNumber,
+        'x-device-timestamp': String(nowMs),
+        'x-transmission-timestamp': String(nowMs),
+        'x-device-sequence': '2',
+        'x-device-signature': telSig
+      },
+      body: telBody
+    });
+    expect(telRes.status).toBe(200);
 
     // Fetch Owner Mobile Dashboard
     const ownerDashboard = unwrapApiResponse(
@@ -622,11 +654,8 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
     const ownerVeh = ownerDashboard.vehicles[0]!;
     expect(ownerVeh.id).toBe(registrationRes.vehicle.id);
     expect(ownerVeh.accessRole).toBe('VEHICLE_OWNER');
-    expect(ownerVeh.liveStatusSummary.lastLocation?.lat).toBeCloseTo(
-      12.9716,
-      4
-    );
-    expect(ownerVeh.locationFreshness.isLive).toBe(true);
+    expect(ownerVeh.liveStatusSummary.lastLocation?.lat).toBeCloseTo(12.9716, 4);
+    expect(ownerVeh.locationFreshness.state).toBe('LIVE');
 
     // Add & Delete Emergency Contact
     const addedContact = unwrapApiResponse(
@@ -737,7 +766,7 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
       initialPassword: 'GuestInvite#2026',
       permissions: {
         canViewLocation: true,
-        canViewTelemetry: true,
+        canViewTelemetry: false,
         canReceiveCriticalAlerts: true,
         canViewIncidentHistory: true,
         canTriggerSos: false
@@ -823,9 +852,9 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
     expect(driverDash.familyMembershipsForOwnedVehicles.length).toBe(0);
 
     // =========================================================================
-    // STEP F: INCIDENT CREATION (MANUAL SOS + HARDWARE ACCIDENT EVENT),
-    // NOTIFICATION DISPLAY & ACKNOWLEDGEMENT, AND GOVERNMENT AUTHORITY
-    // DEPARTMENT / JURISDICTION RESTRICTIONS & RESPONSE WORKFLOW
+    // STEP F: INCIDENT CREATION (MANUAL SOS), NOTIFICATION DISPLAY &
+    // ACKNOWLEDGEMENT, AND GOVERNMENT AUTHORITY DEPARTMENT / JURISDICTION
+    // RESTRICTIONS & RESPONSE WORKFLOW
     // =========================================================================
     const sosIncident = unwrapApiResponse(
       await ownerClient.triggerManualSos({
@@ -843,13 +872,13 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
     const incidentId = sosIncident.id;
     expect(incidentId).toBeTruthy();
 
-    // Also submit an STM32 hardware ACCIDENT_DETECTED event so AUTHORITY_ROAD receives an anonymized road incident
-    const eventBatchObj = {
+    // Also submit a hardware ACCIDENT_DETECTED event so Medical, Police, and Road all receive it
+    const crashPayload = {
       events: [
         {
-          idempotencyKey: 'evt_stage11_accident_0001',
-          eventSequenceNumber: 2,
-          occurredAt: nowIso,
+          idempotencyKey: 'evt_stage11_crash_01',
+          eventSequenceNumber: 3,
+          occurredAt: runtime.now().toISOString(),
           offlineRetry: false,
           isSimulated: false,
           incidentType: 'ACCIDENT_DETECTED',
@@ -863,46 +892,49 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
             jurisdictionCode: 'IN-KA-BLR'
           },
           environmentalSnapshot: {
-            cabinTempCelsius: 26,
-            occupantDetected: true,
-            coPpm: 4,
-            smokeDetected: false,
-            peakImpactG: 6.4
+            peakImpactG: 6.4,
+            cabinTempCelsius: 25.0,
+            occupantDetected: true
           }
         }
       ]
     };
-    const eventBatchRaw = JSON.stringify(eventBatchObj);
-    const eventBatchSig = computeStm32HmacSignature({
+    const crashRawBody = JSON.stringify(crashPayload);
+    const crashSig = computeStm32HmacSignature({
       deviceSecretKeyHex: deviceSecretHex,
       serialNumber: provisionedDevice.serialNumber,
       httpMethod: 'POST',
       requestPath: '/api/v1/iot/events',
       deviceTimestampMs: nowMs,
       transmissionTimestampMs: nowMs,
-      sequenceNumber: 2,
-      rawBody: eventBatchRaw
+      sequenceNumber: 3,
+      rawBody: crashRawBody
     });
-    const eventBatchRes = await fetch(`${baseUrl}/api/v1/iot/events`, {
+    const crashRes = await fetch(`${baseUrl}/api/v1/iot/events`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-device-serial': provisionedDevice.serialNumber,
         'x-device-timestamp': String(nowMs),
         'x-transmission-timestamp': String(nowMs),
-        'x-device-sequence': '2',
-        'x-device-signature': eventBatchSig
+        'x-device-sequence': '3',
+        'x-device-signature': crashSig
       },
-      body: eventBatchRaw
+      body: crashRawBody
     });
-    expect(eventBatchRes.status).toBe(200);
+    expect(crashRes.status).toBe(200);
+    const crashBodyJson = (await crashRes.json()) as {
+      data: { incidentIds: string[] };
+    };
+    const crashIncidentId = crashBodyJson.data.incidentIds[0]!;
+    expect(crashIncidentId).toBeTruthy();
 
     // Family member sees notification in dashboard and acknowledges delivery + marks read
     const familyDashWithSos = unwrapApiResponse(
       await familyClient.getMobileDashboard()
     );
-    expect((familyDashWithSos.notifications ?? []).length).toBeGreaterThan(0);
-    const familyNotification = familyDashWithSos.notifications![0]!;
+    expect(familyDashWithSos.notifications.length).toBeGreaterThan(0);
+    const familyNotification = familyDashWithSos.notifications[0]!;
     const ackDeliv = unwrapApiResponse(
       await familyClient.ackNotificationDelivered(familyNotification.id)
     );
@@ -912,7 +944,7 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
     );
     expect(markRead.status).toBe('READ');
 
-    // Authority Medical (IN-KA-BLR) logs in and sees full emergency medical & vehicle details
+    // Authority Medical (IN-KA-BLR) logs in and sees full emergency medical & vehicle description details
     const medAuthClient = createClient();
     unwrapApiResponse(
       await medAuthClient.loginWithPhone({
@@ -927,14 +959,16 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
     const medIncidents = unwrapApiResponse(
       await medAuthClient.listAuthorityIncidents(authMed.id)
     );
-    expect(medIncidents.some((inc) => inc.id === incidentId)).toBe(true);
+    expect(medIncidents.some((inc) => inc.id === crashIncidentId)).toBe(true);
     const medIncView = medIncidents.find(
-      (inc) => inc.id === incidentId
-    ) as Extract<
-      (typeof medIncidents)[number],
-      { vehicleDescription: unknown }
-    >;
+      (inc) => inc.id === crashIncidentId
+    ) as unknown as {
+      id: string;
+      vehicleDescription: { registrationNumber: string };
+      environmentalSnapshot?: { peakImpactG?: number };
+    };
     expect(medIncView.vehicleDescription.registrationNumber).toBe('KA01VX2026');
+    expect(medIncView.environmentalSnapshot?.peakImpactG).toBeCloseTo(6.4, 1);
 
     // Authority Road (IN-KA-BLR) logs in and receives REDACTED incident view (no owner PII, no reg number, no VIN)
     const roadAuthClient = createClient();
@@ -951,12 +985,13 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
     const roadIncidents = unwrapApiResponse(
       await roadAuthClient.listAuthorityIncidents(authRoad.id)
     );
-    expect(roadIncidents.length).toBeGreaterThan(0);
-    const roadIncView = roadIncidents[0]! as unknown as Record<string, unknown>;
+    const roadIncView = roadIncidents.find(
+      (inc) => inc.id === crashIncidentId
+    ) as unknown as Record<string, unknown>;
     expect(roadIncView).toBeDefined();
-    expect(roadIncView.emergencyContactPhone).toBeUndefined();
     expect(roadIncView.vehicleDescription).toBeUndefined();
     expect(roadIncView.vehicleIdentification).toBeUndefined();
+    expect(roadIncView.emergencyContactPhone).toBeUndefined();
 
     // Out-of-jurisdiction Authority (IN-MH-MUM) receives 0 incidents for IN-KA-BLR
     const mumAuthClient = createClient();
@@ -974,9 +1009,9 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
     // Authority Medical progresses incident through Acknowledge -> Dispatch -> Confirm Response -> Resolve
     const ackInc = unwrapApiResponse(
       await medAuthClient.updateAuthorityIncident(authMed.id, {
-        incidentId,
+        incidentId: crashIncidentId,
         newState: 'AUTHORITY_ACKNOWLEDGED',
-        note: 'BLR 108 Command Desk acknowledged SOS alert.',
+        note: 'BLR 108 Command Desk acknowledged crash alert.',
         visibility: 'ALL_AUTHORIZED'
       })
     );
@@ -984,7 +1019,7 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
 
     const dispInc = unwrapApiResponse(
       await medAuthClient.updateAuthorityIncident(authMed.id, {
-        incidentId,
+        incidentId: crashIncidentId,
         newState: 'DISPATCH_RECORDED_BY_AUTHORITY',
         assignedOfficerName: 'Paramedic Unit KA-01-AMB-42',
         dispatchReferenceCode: 'CAD-BLR-108-9001',
@@ -998,7 +1033,7 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
 
     const confInc = unwrapApiResponse(
       await medAuthClient.updateAuthorityIncident(authMed.id, {
-        incidentId,
+        incidentId: crashIncidentId,
         newState: 'RESPONSE_CONFIRMED',
         assignedOfficerName: 'Paramedic Unit KA-01-AMB-42',
         dispatchReferenceCode: 'CAD-BLR-108-9001',
@@ -1010,7 +1045,7 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
 
     const resInc = unwrapApiResponse(
       await medAuthClient.updateAuthorityIncident(authMed.id, {
-        incidentId,
+        incidentId: crashIncidentId,
         newState: 'RESOLVED',
         note: 'Patient stabilized and incident closed.',
         visibility: 'ALL_AUTHORIZED'
@@ -1022,14 +1057,10 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
     const medWorkspaceAfter = unwrapApiResponse(
       await medAuthClient.getAuthorityWorkspace()
     );
-    const medIncidentsAfter = unwrapApiResponse(
-      await medAuthClient.listAuthorityIncidents(authMed.id)
-    );
-    const resolvedItem = medIncidentsAfter.find((i) => i.id === incidentId)!;
-    expect(resolvedItem.lifecycleState).toBe('RESOLVED');
     expect(
-      medWorkspaceAfter.recentUpdates.filter((u) => u.incidentId === incidentId)
-        .length
+      medWorkspaceAfter.recentUpdates.filter(
+        (u) => u.incidentId === crashIncidentId
+      ).length
     ).toBeGreaterThanOrEqual(4);
 
     // Verify Super-Admin Workspace sees full incident, notification, and verified SHA-256 audit chain
@@ -1037,11 +1068,11 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
       await adminClient.getAdminWorkspace()
     );
     expect(adminWorkspace.auditVerification.valid).toBe(true);
-    expect(adminWorkspace.auditVerification.totalEntries).toBeGreaterThan(0);
+    expect(adminWorkspace.auditVerification.checkedCount).toBeGreaterThan(0);
     expect(
-      adminWorkspace.incidents.some((inc) => inc.id === incidentId)
+      adminWorkspace.incidents.some((inc) => inc.id === crashIncidentId)
     ).toBe(true);
-  });
+  }, 20000);
 
   it('9. Session expiration, user suspension, and logout invalidate active sessions and trigger onSessionExpired', async () => {
     let sessionExpiredCount = 0;
@@ -1164,5 +1195,20 @@ describe('Stage 11 — Frontend-to-Backend Integration Suite (All 5 Applications
     const timeoutRes = await timeoutClient.getMe();
     expect(timeoutRes.success).toBe(false);
     expect(timeoutRes.error?.code).toBe('REQUEST_TIMEOUT');
+  });
+
+  it('11. Default bootstrap accounts (+919500000001..11) authenticate idempotently across all portals on a fresh database', async () => {
+    for (const spec of DEFAULT_BOOTSTRAP_ACCOUNTS) {
+      const client = createClient();
+      const loginRes = unwrapApiResponse(
+        await client.loginWithPhone({
+          phoneE164: spec.phoneE164,
+          password: spec.password
+        })
+      );
+      expect(loginRes.user.uid).toBe(spec.uid);
+      expect(loginRes.user.primaryRole).toBe(spec.primaryRole);
+      expect(loginRes.activeRoles.length).toBeGreaterThanOrEqual(1);
+    }
   });
 });

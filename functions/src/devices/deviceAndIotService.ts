@@ -74,6 +74,7 @@ export class DeviceAndIotService {
   }): Promise<{
     device: DeviceDocument;
     oneTimeProvisioningHmacSecretHex: string;
+    provisioningSecretForFactoryFlashOnly: string;
   }> {
     const parsed = deviceProvisionPayloadSchema.parse({
       serialNumber: params.serialNumber,
@@ -207,7 +208,8 @@ export class DeviceAndIotService {
 
     return {
       device: deviceDoc,
-      oneTimeProvisioningHmacSecretHex: secretKeyHex
+      oneTimeProvisioningHmacSecretHex: secretKeyHex,
+      provisioningSecretForFactoryFlashOnly: secretKeyHex
     };
   }
 
@@ -223,6 +225,7 @@ export class DeviceAndIotService {
     device: DeviceDocument;
     newSecretVersion: number;
     oneTimeNewHmacSecretHex: string;
+    newProvisioningSecretForFactoryFlashOnly: string;
   }> {
     if (!params.deviceId || params.deviceId.trim().length < 3) {
       throw new AppError(400, 'VALIDATION_ERROR', 'Valid deviceId is required.');
@@ -324,7 +327,8 @@ export class DeviceAndIotService {
     return {
       device: updatedDevice,
       newSecretVersion: newVersion,
-      oneTimeNewHmacSecretHex: newSecretHex
+      oneTimeNewHmacSecretHex: newSecretHex,
+      newProvisioningSecretForFactoryFlashOnly: newSecretHex
     };
   }
 

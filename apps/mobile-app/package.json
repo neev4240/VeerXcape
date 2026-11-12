@@ -8,9 +8,17 @@
     "dev": "vite --port 5173",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "cap:sync": "npm run build && cap sync",
+    "android:open": "cap open android",
+    "android:apk:debug": "npm run cap:sync && cd android && ./gradlew assembleDebug",
+    "android:apk:release": "npm run cap:sync && cd android && ./gradlew assembleRelease",
+    "ios:open": "npm run cap:sync && cap open ios"
   },
   "dependencies": {
+    "@capacitor/android": "^6.2.3",
+    "@capacitor/core": "^6.2.3",
+    "@capacitor/ios": "^6.2.3",
     "@veerxcape/shared-constants": "1.0.0",
     "@veerxcape/shared-services": "1.0.0",
     "@veerxcape/shared-types": "1.0.0",
@@ -22,6 +30,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@capacitor/cli": "^6.2.3",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
@@ -32,4 +41,3 @@
     "vite": "^5.4.1"
   }
 }
-
